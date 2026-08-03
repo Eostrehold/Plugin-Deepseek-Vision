@@ -1,0 +1,17 @@
+{
+  "RequestID": "fixture-request-1",
+  "TraceID": "fixture-trace-1",
+  "SourceFormat": "openai-response",
+  "ToFormat": "openai",
+  "Model": "deepseek-v4-flash",
+  "RequestedModel": "deepseek-vision-alias",
+  "Stream": true,
+  "Headers": {
+    "Content-Type": ["application/json"]
+  },
+  "Body": "eyJtb2RlbCI6ImRlZXBzZWVrLXY0LWZsYXNoIiwiaW5wdXQiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6ImlucHV0X3RleHQiLCJ0ZXh0IjoiRGVzY3JpYmUgdGhpcyBpbWFnZS4ifSx7InR5cGUiOiJpbnB1dF9pbWFnZSIsImltYWdlX3VybCI6ImRhdGE6aW1hZ2UvcG5nO2Jhc2U2NCxBQUVDQXc9PSJ9XX1dLCJzdHJlYW0iOnRydWV9",
+  "Metadata": {
+    "request_path": "/v1/responses",
+    "fixture": "after-auth"
+  }
+}

@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*.*.*"]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: Go checks
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Unit tests
+        run: go test ./...
+      - name: Race tests
+        run: go test -race ./...
+      - name: Vet
+        run: go vet ./...
+      - name: Contract fixtures
+        run: ./scripts/verify-contracts.sh
+
+  package:
+    name: Linux amd64 package
+    runs-on: ubuntu-24.04
+    needs: checks
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.x"
+          cache: true
+      - name: Verify C ABI build
+        run: |
+          mkdir -p "$RUNNER_TEMP/c-shared"
+          CGO_ENABLED=1 GOOS=linux GOARCH=amd64 go build -buildmode=c-shared \
+            -trimpath -buildvcs=false -ldflags='-s -w -buildid=' \
+            -o "$RUNNER_TEMP/c-shared/deepseek-vision.so" .
+          nm -D "$RUNNER_TEMP/c-shared/deepseek-vision.so" | grep -Eq '[[:space:]]cliproxy_plugin_init$'
+      - name: Build deterministic package
+        run: ./scripts/package-smoke.sh
+      - name: Build package artifact for upload
+        env:
+          DIST_DIR: ${{ runner.temp }}/dist
+        run: |
+          ./scripts/package.sh
+          ./scripts/checksum.sh
+      - name: Upload package smoke artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: deepseek-vision-linux-amd64
+          path: ${{ runner.temp }}/dist/*
+          if-no-files-found: error

@@ -1,0 +1,13 @@
+{
+  "model": "deepseek-v4-flash",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Compact endpoint is intentionally bypassed."},
+        {"type": "input_image", "image_url": "https://example.invalid/compact.png"}
+      ]
+    }
+  ],
+  "stream": false
+}

@@ -1,0 +1,85 @@
+# Troubleshooting
+
+## Plugin is not discovered
+
+Check the file name and platform directory. Manual mode must contain exactly
+one unversioned candidate:
+
+```text
+<CLI_PROXY_PLUGIN_PATH>/linux/amd64/deepseek-vision.so
+```
+
+The basename must be `deepseek-vision.so` in manual mode. Confirm the host and
+artifact architecture with `file`, verify the ABI symbol, and check for stale
+versioned candidates:
+
+```bash
+file plugins/linux/amd64/deepseek-vision.so
+nm -D plugins/linux/amd64/deepseek-vision.so | grep cliproxy_plugin_init
+test "$(find plugins/linux/amd64 -maxdepth 1 -type f -name 'deepseek-vision*.so' | wc -l)" -eq 1
+```
+
+For store/versioned mode, the expected filename is
+`deepseek-vision-vX.Y.Z.so`; set `plugins.configs.deepseek-vision.store.version`
+to the same version and inspect the management API. Its `path` must point to
+that versioned file and `metadata.version` must match `X.Y.Z`:
+
+```bash
+curl -fsS -H 'Authorization: Bearer <management-key>' \
+  http://127.0.0.1:8085/v0/management/plugins \
+  | jq '.plugins[] | select(.id == "deepseek-vision") | {path, registered, effective_enabled, metadata}'
+curl -fsS -H 'Authorization: Bearer <management-key>' \
+  http://127.0.0.1:8085/v0/management/plugins/deepseek-vision/config \
+  | jq '{store, enabled, priority}'
+```
+
+Restart the host after replacing a dynamic library and inspect its plugin
+registration log. Ensure the host's plugin directory is not mounted read-only
+for a deployment that performs plugin-store installation.
+
+If a manual install has both `deepseek-vision.so` and
+`deepseek-vision-v*.so`, remove the versioned candidates and restart. If a
+store install has multiple versions, the pinned `store.version` must match an
+existing artifact; reinstall the requested archive if the host cleaned up an
+unselected old file.
+
+## Requests pass through unexpectedly
+
+The plugin intentionally handles only `/v1/responses`, source format
+`openai-response`, and final models listed in `target_models`. An alias is
+checked after host resolution; `RequestedModel` alone is not sufficient.
+`/v1/responses/compact`, non-Responses APIs, non-target models and requests
+without images are expected pass-through cases. Anthropic Messages and Chat
+Completions are outside the plugin contract and are not converted. If a request
+uses `previous_response_id`, remember that server-side history remains hidden
+from this callback; only images present in the current visible `input[]` can be
+rewritten.
+
+For v0.1.0, use `deepseek-v4-flash` when checking a real upstream. The
+`deepseek-v4-pro` entry is future-supported configuration only; it is not a
+required or probed service in this release.
+
+## HTTP 502 from image requests
+
+Check that the key environment variable is present inside the CLIProxyAPI
+process/container and that `vision_base_url` is reachable from that runtime.
+The client appends `/responses` to the configured base. 401/403, malformed VLM
+JSON, response-size limits and exhausted retries are intentional hard failures.
+The error returned to the client is redacted; inspect only service-side status
+metrics, never enable logging of request bodies or Authorization headers. For
+eligible Responses image requests, plugin failures are terminal (typically
+502); the plugin does not fall back to forwarding the original image.
+
+## Docker issues
+
+`docker build` requires a running daemon and access to the Go base image/module
+proxy. Use `docker compose ... config` first to catch invalid paths or YAML.
+Create the host directories referenced by the compose file and verify that the
+plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
+
+## Slow or rejected requests
+
+Reduce `max_images_per_request` or increase the bounded timeouts only after
+checking VLM latency. A 413 indicates a configured body/reference/ABI limit;
+429/5xx responses are retried only within the total deadline. Caches are
+process-local and are cleared after reconfigure or shutdown.

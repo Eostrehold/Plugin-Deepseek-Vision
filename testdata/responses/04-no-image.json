@@ -1,0 +1,12 @@
+{
+  "model": "deepseek-v4-flash",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "This request has no image and must pass through."}
+      ]
+    }
+  ],
+  "stream": false
+}

@@ -1,0 +1,70 @@
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+/config.yaml
+/config.local.yaml
+/docker-compose.override.yml
+auth/
+auths/
+credentials/
+secrets/
+*.key
+*.pem
+*.secret
+*.p12
+*.pfx
+
+# Local plugin artifacts
+/plugins/
+
+# Internal local handoff and review notes
+/HANDOFF.md
+/docs/review-followups.md
+
+# Go build and test output
+go.work
+go.work.sum
+bin/
+build/
+dist/
+*.so
+*.dylib
+*.dll
+*.h
+*.test
+coverage.out
+coverage.html
+
+# Generated packaging and logs
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.sha256
+*.checksum
+*.checksums
+checksums.txt
+*.log
+logs/
+
+# Captured HTTP payloads may contain user data; only checked-in fixtures are allowed.
+testdata/generated/
+testdata/captures/
+*.response.json
+*.request.json
+
+# Editors and OS files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Generated Python bytecode from fixture/E2E helpers
+__pycache__/
+test/e2e/__pycache__/
+*.py[cod]
+
+# Local CodeGraph index and database
+.codegraph/

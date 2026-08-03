@@ -1,0 +1,220 @@
+package main
+
+/*
+#include <stdint.h>
+#include <stdlib.h>
+
+typedef struct {
+	void* ptr;
+	size_t len;
+} cliproxy_buffer;
+
+typedef struct {
+	uint32_t abi_version;
+	void* host_ctx;
+	void* call;
+	void* free_buffer;
+} cliproxy_host_api;
+
+typedef int (*cliproxy_plugin_call_fn)(char*, uint8_t*, size_t, cliproxy_buffer*);
+typedef void (*cliproxy_plugin_free_fn)(void*, size_t);
+typedef void (*cliproxy_plugin_shutdown_fn)(void);
+
+typedef struct {
+	uint32_t abi_version;
+	cliproxy_plugin_call_fn call;
+	cliproxy_plugin_free_fn free_buffer;
+	cliproxy_plugin_shutdown_fn shutdown;
+} cliproxy_plugin_api;
+
+extern int cliproxyPluginCall(char*, uint8_t*, size_t, cliproxy_buffer*);
+extern void cliproxyPluginFree(void*, size_t);
+extern void cliproxyPluginShutdown(void);
+*/
+import "C"
+
+import (
+	"errors"
+	"sync/atomic"
+	"unsafe"
+
+	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
+)
+
+const (
+	// maxABIEnvelopeOverhead reserves bounded space for the JSON fields around
+	// Body (headers, metadata, model IDs, and tracing fields). Body itself is a
+	// []byte and therefore expands to base64 in the lifecycle RPC JSON.
+	maxABIEnvelopeOverhead uint64 = 4 << 20
+	maxConfiguredBodyBytes uint64 = config.MaxRequestBytesLimit
+	maxABIRequestBytes     uint64 = ((maxConfiguredBodyBytes + 2) / 3 * 4) + maxABIEnvelopeOverhead
+	// maxABIBudgetBytes bounds the amount of raw RPC memory admitted before the
+	// request is decoded.  A request at the larger configuration ceiling would
+	// otherwise be copied by C.GoBytes and then expanded again by JSON/base64
+	// decoding before any per-request limiter can run.
+	// Keep the effective process budget below the configured 100 MiB logical
+	// body ceiling because the ABI envelope, JSON decoder and rewrite tree each
+	// create additional representations of the body after admission. One normal
+	// 20 MiB body still fits, while several near-limit copies cannot pile up.
+	maxABIBudgetBytes      uint64 = 32 << 20
+	maxABIInFlightRequests int64  = 4
+	maxCIntValue           uint64 = 1<<31 - 1
+)
+
+var (
+	errABIRequestTooLarge       = errors.New("ABI request exceeds the plugin hard limit")
+	errABIRequestLengthOverflow = errors.New("ABI request length exceeds C.int")
+	errABIAdmissionBusy         = errors.New("ABI request memory budget is exhausted")
+)
+
+var (
+	abiInFlightRequests atomic.Int64
+	abiInFlightBytes    atomic.Uint64
+)
+
+func main() {}
+
+//export cliproxy_plugin_init
+func cliproxy_plugin_init(_ *C.cliproxy_host_api, plugin *C.cliproxy_plugin_api) C.int {
+	if plugin == nil {
+		return 1
+	}
+	plugin.abi_version = C.uint32_t(1)
+	plugin.call = C.cliproxy_plugin_call_fn(C.cliproxyPluginCall)
+	plugin.free_buffer = C.cliproxy_plugin_free_fn(C.cliproxyPluginFree)
+	plugin.shutdown = C.cliproxy_plugin_shutdown_fn(C.cliproxyPluginShutdown)
+	return 0
+}
+
+//export cliproxyPluginCall
+func cliproxyPluginCall(method *C.char, request *C.uint8_t, requestLen C.size_t, response *C.cliproxy_buffer) C.int {
+	if response != nil {
+		response.ptr = nil
+		response.len = 0
+	}
+	if method == nil {
+		_ = writeResponse(response, errorEnvelope("invalid_method", "method is required"))
+		return 1
+	}
+	methodName := C.GoString(method)
+	checkedLength, err := checkedABIRequestLength(uint64(requestLen))
+	if err != nil {
+		raw, returnCode := oversizedRequestResult(methodName, err)
+		if !writeResponse(response, raw) {
+			return 1
+		}
+		return C.int(returnCode)
+	}
+	if !tryAcquireABIAdmission(uint64(checkedLength)) {
+		raw, returnCode := oversizedRequestResult(methodName, errABIAdmissionBusy)
+		if !writeResponse(response, raw) {
+			return 1
+		}
+		return C.int(returnCode)
+	}
+	defer releaseABIAdmission(uint64(checkedLength))
+	if checkedLength > 0 && request == nil {
+		_ = writeResponse(response, errorEnvelope("invalid_request", "request pointer is required for a non-empty request"))
+		return 1
+	}
+	var requestBytes []byte
+	if checkedLength > 0 {
+		requestBytes = C.GoBytes(unsafe.Pointer(request), C.int(checkedLength))
+	}
+	raw, err := handleMethod(methodName, requestBytes)
+	if err != nil {
+		_ = writeResponse(response, errorEnvelope("plugin_error", err.Error()))
+		return 1
+	}
+	if !writeResponse(response, raw) {
+		return 1
+	}
+	return 0
+}
+
+func tryAcquireABIAdmission(length uint64) bool {
+	if length > maxABIBudgetBytes {
+		return false
+	}
+	for {
+		current := abiInFlightRequests.Load()
+		if current >= maxABIInFlightRequests {
+			return false
+		}
+		if abiInFlightRequests.CompareAndSwap(current, current+1) {
+			break
+		}
+	}
+	for {
+		current := abiInFlightBytes.Load()
+		if current > maxABIBudgetBytes-length || !abiInFlightBytes.CompareAndSwap(current, current+length) {
+			abiInFlightRequests.Add(-1)
+			return false
+		}
+		return true
+	}
+}
+
+func releaseABIAdmission(length uint64) {
+	abiInFlightBytes.Add(^uint64(length - 1))
+	abiInFlightRequests.Add(-1)
+}
+
+func base64EncodedLength(length uint64) uint64 {
+	return (length + 2) / 3 * 4
+}
+
+func oversizedInterceptorEnvelope(method string) ([]byte, bool) {
+	if method != pluginabi.MethodRequestInterceptBefore && method != pluginabi.MethodRequestInterceptAfter {
+		return nil, false
+	}
+	raw, err := terminateJSON(413, "request_too_large", "intercepted request exceeds the plugin ABI size limit")
+	if err != nil {
+		// terminateJSON marshals a fixed JSON-compatible response and cannot fail
+		// for these arguments. Treat an impossible encoder failure as unwritable.
+		return nil, true
+	}
+	return raw, true
+}
+
+func oversizedRequestResult(method string, lengthErr error) ([]byte, int) {
+	if raw, terminate := oversizedInterceptorEnvelope(method); terminate {
+		return raw, 0
+	}
+	return errorEnvelope("request_too_large", lengthErr.Error()), 1
+}
+
+//export cliproxyPluginFree
+func cliproxyPluginFree(ptr unsafe.Pointer, length C.size_t) {
+	if ptr != nil {
+		C.free(ptr)
+	}
+	_ = length
+}
+
+//export cliproxyPluginShutdown
+func cliproxyPluginShutdown() { shutdownPlugin() }
+
+func checkedABIRequestLength(length uint64) (int, error) {
+	if length > maxCIntValue {
+		return 0, errABIRequestLengthOverflow
+	}
+	if length > maxABIRequestBytes {
+		return 0, errABIRequestTooLarge
+	}
+	return int(length), nil
+}
+
+func writeResponse(response *C.cliproxy_buffer, raw []byte) bool {
+	if response == nil || len(raw) == 0 {
+		return false
+	}
+	ptr := C.CBytes(raw)
+	if ptr == nil {
+		return false
+	}
+	response.ptr = ptr
+	response.len = C.size_t(len(raw))
+	return true
+}

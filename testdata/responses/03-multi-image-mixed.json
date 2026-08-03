@@ -1,0 +1,21 @@
+{
+  "model": "deepseek-v4-flash",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Compare these two diagrams."},
+        {"type": "input_image", "image_url": "https://example.invalid/one.png"},
+        {"type": "input_text", "text": "The second image is a data URI."},
+        {"type": "input_image", "image_url": "data:image/jpeg;base64,/9j/4AAQSkZJRg=="}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Keep the original text ordering."}
+      ]
+    }
+  ],
+  "metadata": {"fixture": "multi-image-mixed"}
+}

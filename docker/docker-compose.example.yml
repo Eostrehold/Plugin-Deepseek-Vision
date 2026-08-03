@@ -1,0 +1,39 @@
+# CLIProxyAPI v7 example with the plugin directory mounted from the host.
+# Before starting, place deepseek-vision.so at:
+#   ${CLI_PROXY_PLUGIN_PATH:-./plugins}/linux/amd64/deepseek-vision.so
+# and export DEEPSEEK_VISION_API_KEY in the shell (never commit it to YAML).
+services:
+  cli-proxy-api:
+    # Pin the image used by the validated Docker acceptance run. Override
+    # deliberately when upgrading and record the new digest in release notes.
+    image: ${CLI_PROXY_IMAGE:-eceasy/cli-proxy-api@sha256:019532ec2bff117a2da63366ac99d04c1984cd5b2849033b401e22f2c5751cd0}
+    container_name: cli-proxy-api
+    environment:
+      - DEPLOY=${DEPLOY:-}
+      # Pass through the host process environment without storing the secret
+      # in this YAML file. Do not capture `docker compose config` after the
+      # key is exported: Compose renders pass-through values in that output.
+      - DEEPSEEK_VISION_API_KEY
+    ports:
+      - "127.0.0.1:8317:8317"
+    volumes:
+      # Defaults are relative to this file's docker/ directory.
+      - ${CLI_PROXY_CONFIG_PATH:-../config.yaml}:/CLIProxyAPI/config.yaml:ro
+      - ${CLI_PROXY_AUTH_PATH:-../auths}:/root/.cli-proxy-api
+      - ${CLI_PROXY_LOG_PATH:-../logs}:/CLIProxyAPI/logs
+      - ${CLI_PROXY_PLUGIN_PATH:-../plugins}:/CLIProxyAPI/plugins
+    restart: unless-stopped
+
+  # Optional BuildKit artifact target. Run:
+  #   docker compose --profile build build deepseek-vision-build
+  # and use `docker build --output` (documented in docs/installation.md) to
+  # extract the .so into the mounted plugin directory.
+  deepseek-vision-build:
+    profiles: ["build"]
+    image: deepseek-vision-builder:${VERSION:-0.1.0}
+    build:
+      context: ..
+      dockerfile: Dockerfile.plugin
+      target: artifact
+      args:
+        VERSION: ${VERSION:-0.1.0}

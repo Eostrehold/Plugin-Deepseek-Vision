@@ -1,0 +1,348 @@
+// Package responses contains the side-effect-free Responses body planner and
+// rewriter used by the request interceptor. It intentionally knows nothing
+// about HTTP or the VLM client: discovery happens first, and Rewrite is called
+// only after every image has a successful VLM result.
+package responses
+
+import (
+	"bytes"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/safety"
+)
+
+const (
+	defaultMaxImages         = 4
+	defaultMaxReferenceBytes = 15 * 1024 * 1024
+	defaultMaxBodyBytes      = 20 * 1024 * 1024
+	defaultMaxFocusChars     = 2000
+	defaultMaxResultChars    = 20000
+)
+
+// Options controls request discovery and rewrite safety limits. A zero value
+// uses conservative defaults. MaxFocusChars is a character (rune) limit;
+// byte limits are measured in bytes of the UTF-8 request/reference.
+type Options struct {
+	MaxImages         int
+	MaxReferenceBytes int
+	MaxBodyBytes      int
+	MaxFocusChars     int
+	MaxResultChars    int
+}
+
+func (o Options) normalized() Options {
+	if o.MaxImages <= 0 {
+		o.MaxImages = defaultMaxImages
+	}
+	if o.MaxReferenceBytes <= 0 {
+		o.MaxReferenceBytes = defaultMaxReferenceBytes
+	}
+	if o.MaxBodyBytes <= 0 {
+		o.MaxBodyBytes = defaultMaxBodyBytes
+	}
+	if o.MaxFocusChars <= 0 {
+		o.MaxFocusChars = defaultMaxFocusChars
+	}
+	if o.MaxResultChars <= 0 {
+		o.MaxResultChars = defaultMaxResultChars
+	}
+	return o
+}
+
+// Image describes one image discovered in a request. Number is stable and is
+// one-based in original traversal order. Reference is safe to pass to the
+// VLM client, while FocusHint contains nearby user text with the configured
+// hard cap applied.
+type Image struct {
+	Number    int
+	Reference string
+	FocusHint string
+
+	location imageLocation
+}
+
+type imageLocation struct {
+	kind      locationKind
+	input     int
+	block     int
+	globalPos int
+}
+
+// locationKey omits globalPos, which is only used while selecting focus
+// hints. Array coordinates are the immutable identity used during rewrite.
+type locationKey struct {
+	kind  locationKind
+	input int
+	block int
+}
+
+func makeLocationKey(location imageLocation) locationKey {
+	return locationKey{kind: location.kind, input: location.input, block: location.block}
+}
+
+type locationKind uint8
+
+const (
+	locationContent locationKind = iota + 1
+	locationFunctionOutput
+)
+
+// ImageResult is the structured output required to replace one image. Both
+// fields are rendered into the frozen single-block template.
+type ImageResult struct {
+	VisibleText       string
+	VisualDescription string
+}
+
+// Plan is an immutable discovery result. A Plan may be rewritten repeatedly;
+// each call works on a fresh JSON tree and never mutates the original body.
+type Plan struct {
+	original []byte
+	root     any
+	images   []Image
+	options  Options
+}
+
+// Discover parses a Responses request body and records every supported image
+// in input[].content[] and function_call_output.output[]. The variadic form
+// keeps the common Discover(body) call concise while allowing the interceptor
+// to pass explicit limits.
+func Discover(body []byte, options ...Options) (*Plan, error) {
+	opt := Options{}.normalized()
+	if len(options) > 0 {
+		opt = options[0].normalized()
+	}
+	if len(body) > opt.MaxBodyBytes {
+		return nil, limits("request body exceeds configured limit", "body")
+	}
+
+	root, err := decodeJSON(body)
+	if err != nil {
+		return nil, malformed("request body is not valid JSON", "body")
+	}
+	object, ok := root.(map[string]any)
+	if !ok {
+		return nil, malformed("Responses request must be a JSON object", "body")
+	}
+
+	plan := &Plan{
+		original: append([]byte(nil), body...),
+		root:     root,
+		options:  opt,
+	}
+
+	input, exists := object["input"]
+	if !exists {
+		return plan, nil
+	}
+	// A top-level string is a valid Responses shorthand and cannot contain an
+	// image block. It is deliberately a passthrough.
+	if _, ok := input.(string); ok {
+		return plan, nil
+	}
+	items, ok := input.([]any)
+	if !ok {
+		return nil, malformed("input must be a string or array", "input")
+	}
+
+	var candidates []focusCandidate
+	var pending []pendingImage
+	globalPos := 0
+	for inputIndex, item := range items {
+		itemObject, ok := item.(map[string]any)
+		if !ok {
+			globalPos++
+			continue
+		}
+		role, _ := itemObject["role"].(string)
+		itemType, _ := itemObject["type"].(string)
+
+		if rawContent, exists := itemObject["content"]; exists {
+			content, ok := rawContent.([]any)
+			if !ok {
+				return nil, malformed("input.content must be an array", fmt.Sprintf("input[%d].content", inputIndex))
+			}
+			for blockIndex, block := range content {
+				globalPos++
+				blockObject, ok := block.(map[string]any)
+				if !ok {
+					return nil, malformed("input.content blocks must be objects", fmt.Sprintf("input[%d].content[%d]", inputIndex, blockIndex))
+				}
+				typeName, _ := blockObject["type"].(string)
+				if role == "user" && typeName == "input_text" {
+					if text, ok := blockObject["text"].(string); ok && strings.TrimSpace(text) != "" {
+						candidates = append(candidates, focusCandidate{input: inputIndex, pos: globalPos, text: text})
+					}
+				}
+				if typeName == "input_image" {
+					image, err := discoverImage(blockObject, imageLocation{
+						kind: locationContent, input: inputIndex, block: blockIndex, globalPos: globalPos,
+					}, len(pending)+1, opt)
+					if err != nil {
+						return nil, err
+					}
+					pending = append(pending, image)
+				}
+			}
+		}
+
+		if itemType == "function_call_output" {
+			if rawOutput, exists := itemObject["output"]; exists {
+				output, ok := rawOutput.([]any)
+				if !ok {
+					return nil, malformed("function_call_output.output must be an array", fmt.Sprintf("input[%d].output", inputIndex))
+				}
+				for blockIndex, block := range output {
+					globalPos++
+					blockObject, ok := block.(map[string]any)
+					if !ok {
+						return nil, malformed("function_call_output.output blocks must be objects", fmt.Sprintf("input[%d].output[%d]", inputIndex, blockIndex))
+					}
+					typeName, _ := blockObject["type"].(string)
+					if typeName == "input_image" {
+						image, err := discoverImage(blockObject, imageLocation{
+							kind: locationFunctionOutput, input: inputIndex, block: blockIndex, globalPos: globalPos,
+						}, len(pending)+1, opt)
+						if err != nil {
+							return nil, err
+						}
+						pending = append(pending, image)
+					}
+				}
+			}
+		}
+	}
+	if len(pending) > opt.MaxImages {
+		return nil, limits("request contains too many images", "input")
+	}
+
+	for i := range pending {
+		pending[i].FocusHint = chooseFocus(pending[i].location, candidates, opt.MaxFocusChars)
+		plan.images = append(plan.images, pending[i].Image)
+	}
+	return plan, nil
+}
+
+type pendingImage struct {
+	Image
+}
+
+type focusCandidate struct {
+	input int
+	pos   int
+	text  string
+}
+
+func chooseFocus(location imageLocation, candidates []focusCandidate, maxChars int) string {
+	var best *focusCandidate
+	bestDistance := int(^uint(0) >> 1)
+	// Prefer text in the same user input item. This makes each image in a
+	// multi-image message use the nearest preceding/following instruction.
+	for i := range candidates {
+		candidate := &candidates[i]
+		distance := abs(candidate.pos - location.globalPos)
+		if candidate.input != location.input {
+			continue
+		}
+		if distance < bestDistance || (distance == bestDistance && candidate.pos < best.pos) {
+			best, bestDistance = candidate, distance
+		}
+	}
+	if best == nil {
+		for i := range candidates {
+			candidate := &candidates[i]
+			distance := abs(candidate.pos - location.globalPos)
+			if distance < bestDistance || (distance == bestDistance && candidate.pos < best.pos) {
+				best, bestDistance = candidate, distance
+			}
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return truncateRunes(strings.TrimSpace(best.text), maxChars)
+}
+
+func discoverImage(block map[string]any, location imageLocation, number int, opt Options) (pendingImage, error) {
+	raw, hasURL := block["image_url"]
+	if hasURL {
+		reference, ok := raw.(string)
+		if !ok {
+			return pendingImage{}, malformed("input_image.image_url must be a string", locationPath(location))
+		}
+		if err := safety.ValidateImageReference(reference, opt.MaxReferenceBytes); err != nil {
+			if errors.Is(err, safety.ErrImageReferenceTooLarge) {
+				return pendingImage{}, limits("image reference exceeds configured limit", locationPath(location))
+			}
+			// Detailed validator failures are deliberately collapsed into the
+			// stable public 422 contract; never include the source reference.
+			return pendingImage{}, unsupported("image reference must be a valid HTTP(S) URL or data:image URI", locationPath(location))
+		}
+		return pendingImage{Image: Image{Number: number, Reference: reference, location: location}}, nil
+	}
+	if _, hasFileID := block["file_id"]; hasFileID {
+		return pendingImage{}, unsupported("file_id image references are not supported", locationPath(location))
+	}
+	return pendingImage{}, malformed("input_image requires image_url", locationPath(location))
+}
+
+func decodeJSON(body []byte) (any, error) {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return nil, err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return nil, fmt.Errorf("multiple JSON values")
+		}
+		return nil, err
+	}
+	return value, nil
+}
+
+func truncateRunes(value string, max int) string {
+	if max <= 0 || utf8.RuneCountInString(value) <= max {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:max])
+}
+
+func abs(value int) int {
+	if value < 0 {
+		return -value
+	}
+	return value
+}
+
+func locationPath(location imageLocation) string {
+	if location.kind == locationFunctionOutput {
+		return fmt.Sprintf("input[%d].output[%d]", location.input, location.block)
+	}
+	return fmt.Sprintf("input[%d].content[%d]", location.input, location.block)
+}
+
+// Images returns a copy of the discovered image metadata. The returned slice
+// and its values may be freely modified by the caller.
+func (p *Plan) Images() []Image {
+	if p == nil || len(p.images) == 0 {
+		return nil
+	}
+	images := make([]Image, len(p.images))
+	copy(images, p.images)
+	for i := range images {
+		images[i].location = imageLocation{}
+	}
+	return images
+}
+
+// HasImages reports whether discovery found at least one image.
+func (p *Plan) HasImages() bool { return p != nil && len(p.images) > 0 }

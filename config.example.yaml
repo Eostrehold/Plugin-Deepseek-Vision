@@ -1,0 +1,28 @@
+plugins:
+  enabled: true
+  configs:
+    deepseek-vision:
+      enabled: true
+      priority: 100
+      target_models:
+        - deepseek-v4-flash
+
+      # OpenAI-compatible Responses endpoint. This value is deployment-specific
+      # and must be supplied explicitly; the plugin has no networked default.
+      vision_base_url: http://127.0.0.1:8317/v1
+      vision_model: gpt-5.6-luna
+      # The plugin reads the key from this environment variable only.
+      vision_api_key_env: DEEPSEEK_VISION_API_KEY
+
+      language: zh
+      request_timeout_seconds: 120
+      per_call_timeout_seconds: 60
+      retry_max_attempts: 3
+      max_concurrency: 4
+      max_images_per_request: 4
+      max_request_bytes: 20971520
+      max_image_reference_bytes: 15728640
+      max_response_bytes: 4194304
+      max_result_chars: 20000
+      cache_size: 128
+      cache_ttl_seconds: 900

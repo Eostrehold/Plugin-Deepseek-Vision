@@ -1,0 +1,67 @@
+# Source control and local credentials
+.git/
+.gitignore
+.codegraph/
+/HANDOFF.md
+/docs/review-followups.md
+.env
+.env*
+.env.*
+!.env.example
+*.key
+*.pem
+*.secret
+*.p12
+*.pfx
+auth/
+auths/
+credentials/
+secrets/
+
+# Local plugin artifacts
+/plugins/
+
+# Runtime data, captured payloads and generated fixtures
+logs/
+*.log
+testdata/generated/
+testdata/captures/
+test/e2e/__pycache__/
+*.request.json
+*.response.json
+
+# Local build and release output
+dist/
+build/
+bin/
+go.work
+go.work.sum
+*.so
+*.dylib
+*.dll
+*.h
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.sha256
+*.checksum
+*.checksums
+checksums.txt
+*.test
+coverage.out
+coverage.html
+
+# Local configuration (the checked-in example remains available)
+/config.yaml
+/config.local.yaml
+/docker-compose.override.yml
+
+# Python caches and editor/OS files
+__pycache__/
+*.py[cod]
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo

@@ -1,0 +1,14 @@
+{
+  "model": "deepseek-v4-pro",
+  "input": [
+    {
+      "type": "function_call_output",
+      "call_id": "call_demo_1",
+      "output": [
+        {"type": "input_text", "text": "Tool returned an attachment."},
+        {"type": "input_image", "image_url": "https://example.invalid/fixture.png"}
+      ]
+    }
+  ],
+  "stream": false
+}

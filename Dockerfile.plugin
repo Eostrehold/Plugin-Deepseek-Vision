@@ -1,0 +1,25 @@
+# Reproducible Linux/amd64 CGO builder for deepseek-vision.
+# Extract the artifact without creating a runtime image:
+#   docker build --file Dockerfile.plugin --build-arg VERSION=0.1.0 \
+#     --output type=local,dest=dist .
+FROM golang:1.26-bookworm AS build
+
+ARG VERSION=0.1.0
+ENV CGO_ENABLED=1 \
+    GOOS=linux \
+    GOARCH=amd64 \
+    GOTOOLCHAIN=auto
+
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+
+RUN mkdir -p /out && \
+    go build -buildmode=c-shared -trimpath -buildvcs=false \
+      -ldflags="-s -w -buildid= -X main.pluginVersion=${VERSION}" \
+      -o /out/deepseek-vision.so . && \
+    rm -f /out/deepseek-vision.h
+
+FROM scratch AS artifact
+COPY --from=build /out/deepseek-vision.so /deepseek-vision.so

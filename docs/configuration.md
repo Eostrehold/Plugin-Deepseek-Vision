@@ -1,0 +1,58 @@
+# Configuration
+
+The host passes either the plugin mapping directly or the complete
+`plugins.configs.deepseek-vision` document. `config.example.yaml` shows the
+complete host shape. All values are validated before an atomic reconfigure;
+an invalid update leaves the previous snapshot active.
+
+| Field | Meaning | Default |
+| --- | --- | --- |
+| `enabled`, `priority` | Host-owned switches | host-defined |
+| `target_models` | Final upstream models eligible for interception | `deepseek-v4-flash` |
+| `vision_base_url` | OpenAI-compatible Responses base URL | required; no networked default |
+| `vision_model` | VLM model identifier | `gpt-5.6-luna` |
+| `vision_api_key_env` | Environment variable containing the key | `DEEPSEEK_VISION_API_KEY` |
+| `language` | Preferred output language | `zh` |
+| `request_timeout_seconds` | Total deadline including retries | 120 |
+| `per_call_timeout_seconds` | Per-image request deadline | 60 |
+| `retry_max_attempts` | Attempts for transient failures | 3 |
+| `max_concurrency` | Global VLM HTTP concurrency | 4 |
+| `max_images_per_request` | Image blocks accepted per request | 4 |
+| `max_request_bytes` | Raw Responses body limit | 20 MiB |
+| `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
+| `max_response_bytes` | VLM response limit | 4 MiB |
+| `max_result_chars` | Extracted result limit | 20,000 |
+| `cache_size`, `cache_ttl_seconds` | Result cache capacity and lifetime | 128 / 900 |
+
+The native ABI applies an additional process-wide admission budget of 32 MiB of
+raw RPC bytes and four concurrent callbacks. This protects the C-to-Go copy and
+subsequent JSON/rewrite allocations; it can reject a request before the larger
+per-configuration `max_request_bytes` ceiling is reached.
+
+`vision_base_url` must be an explicit HTTP(S) URL without embedded credentials,
+query, or fragment. It must stop at the API base (normally `.../v1`); the
+client appends `/responses` and rejects an already-suffixed path. API keys are
+read from the named environment variable only.
+
+`deepseek-v4-pro` is not enabled by default because its Responses endpoint is
+not part of the validated release surface. Add it explicitly to
+`target_models` only after verifying that upstream path in your deployment.
+
+The VLM prompt asks for both visible text and visual/layout context in one
+response. A short text focus hint from the surrounding request may be included;
+image text is treated as untrusted data and never as an instruction.
+
+## Gate and pass-through rules
+
+The handler requires all of:
+
+```text
+SourceFormat == "openai-response"
+metadata.request_path == "/v1/responses"
+final Model in target_models
+```
+
+The compact path, unknown image references and unsupported request shapes do not
+silently pass an image through: unsupported images terminate with a client
+error, while a VLM failure terminates with HTTP 502. A successful rewrite is
+idempotent and no original image URL/data URI remains in the forwarded body.

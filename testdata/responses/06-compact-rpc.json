@@ -1,0 +1,17 @@
+{
+  "RequestID": "fixture-compact-1",
+  "TraceID": "fixture-compact-trace",
+  "SourceFormat": "openai-response",
+  "ToFormat": "openai",
+  "Model": "deepseek-v4-flash",
+  "RequestedModel": "deepseek-v4-flash",
+  "Stream": false,
+  "Headers": {
+    "Content-Type": ["application/json"]
+  },
+  "Body": "eyJtb2RlbCI6ImRlZXBzZWVrLXY0LWZsYXNoIiwiaW5wdXQiOlt7InJvbGUiOiJ1c2VyIiwiY29udGVudCI6W3sidHlwZSI6ImlucHV0X3RleHQiLCJ0ZXh0IjoiQ29tcGFjdCBlbmRwb2ludCBpcyBpbnRlbnRpb25hbGx5IGJ5cGFzc2VkLiJ9LHsidHlwZSI6ImlucHV0X2ltYWdlIiwiaW1hZ2VfdXJsIjoiaHR0cHM6Ly9leGFtcGxlLmludmFsaWQvY29tcGFjdC5wbmcifV19XSwic3RyZWFtIjpmYWxzZX0=",
+  "Metadata": {
+    "request_path": "/v1/responses/compact",
+    "fixture": "compact-bypass"
+  }
+}
