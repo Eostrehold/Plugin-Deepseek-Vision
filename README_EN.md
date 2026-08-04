@@ -13,8 +13,7 @@ before the DeepSeek upstream request is sent.
 
 The currently available and release-tested DeepSeek target is
 `deepseek-v4-flash`. `deepseek-v4-pro` is not required for this release, is not
-probed by the real gateway test, and remains pending upstream Responses
-availability.
+probed by release acceptance, and remains pending upstream Responses availability.
 
 The plugin is strict for eligible Responses image requests: if the VLM call
 fails, the original request is stopped with HTTP 502 and the unprocessed image
@@ -58,14 +57,16 @@ outside this contract and are left to the host's normal handling.
    upgrade/rollback procedures.
 
 3. Copy [`config.example.yaml`](config.example.yaml) to the CLIProxyAPI
-   configuration location. Set the configured VLM credential environment
-   variable only in the runtime environment; never commit credentials.
+   configuration location. The plugin reuses a vision-capable model and
+   credentials already configured in CLIProxyAPI, so it needs no separate
+   endpoint, API key, or Docker environment variable.
 
 4. Start CLIProxyAPI with its plugin root set to `./plugins`. A ready-to-edit
    Docker Compose example is in [`docker/docker-compose.example.yml`](docker/docker-compose.example.yml).
 
-The VLM endpoint is deployment-specific and must be set explicitly (there is
-no networked default). The default model is `gpt-5.6-luna`.
+The default vision model is `gpt-5.6-luna`; set `vision_model` to any
+vision-capable model available through CLIProxyAPI. CLIProxyAPI owns provider
+protocol translation, routing, credentials, transport, and retry policy.
 
 ## Build and release
 
@@ -105,13 +106,31 @@ release assets.
 - Each `input_image` is replaced in place with one `input_text` block
   containing visible text and a visual description. OCR and visual explanation
   are intentionally VLM-first and returned in one call.
-- Requests are bounded by image count, body/reference/response sizes,
-  concurrency, cache TTL and real HTTP deadlines.
+- Identical image/model/language/full-prompt work is deduplicated within one
+  request and reused across requests through a configurable TTL cache. Defaults
+  are 128 entries, 15 minutes for data URIs, and 2 minutes for URLs;
+  reconfigure starts a fresh cache.
+- Requests are bounded by image count, body/reference/response sizes, and a
+  total preprocessing deadline.
+- Invalid or incomplete configuration edits never unregister the plugin. The
+  last known-good runtime remains active; if there is no valid runtime yet,
+  targeted image requests fail closed while the configuration UI stays
+  available.
 - For an eligible Responses request, malformed JSON returns 400, unsupported
-  image references return 422, configured size limits return 413, and VLM,
+  image references return 422, configured size limits return 413 with the
+  rejected limit category, and VLM,
   timeout, or rewrite failures return 502. Failures terminate the request and
   never fall back to forwarding an original image; non-eligible protocols and
   models retain pass-through behavior.
+- Every 413 emits one content-free warning through the host's `host.log`, tied
+  to the request ID when available. It records only the limit kind, actual and
+  maximum values, active size settings, and configuration generation.
+- For difficult multi-turn diagnosis, `trace_enabled: true` writes a plaintext
+  event index and per-request bundle under `logs/deepseek-vision-trace/`. It
+  includes the exact inbound body, image URLs/data URIs, focus hints, cache
+  plan, VLM requests/responses, and rewritten body. Credential headers and
+  metadata are still redacted. Treat this directory as a full copy of user
+  data and enable it only temporarily.
 - If the runtime is unavailable before normal discovery can run, a targeted
   Responses request with malformed or image-shaped input is conservatively
   terminated with 502; unrelated models still pass through.

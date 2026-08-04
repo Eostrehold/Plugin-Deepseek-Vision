@@ -3,7 +3,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"os"
 	"sync"
 	"testing"
 	"time"
@@ -14,6 +13,7 @@ import (
 )
 
 func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
+	defer shutdownPlugin()
 	raw, err := handleMethod("plugin.register", []byte(`{"schema_version":2}`))
 	if err != nil {
 		t.Fatal(err)
@@ -31,6 +31,89 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	}
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
+	}
+	if len(result.Metadata.ConfigFields) != 6 {
+		t.Fatalf("config field count = %d, want 6 fields", len(result.Metadata.ConfigFields))
+	}
+	wantFields := map[string]pluginapi.ConfigFieldType{
+		"vision_model":                   pluginapi.ConfigFieldTypeString,
+		"language":                       pluginapi.ConfigFieldTypeEnum,
+		"analysis_cache_size":            pluginapi.ConfigFieldTypeInteger,
+		"analysis_cache_ttl_seconds":     pluginapi.ConfigFieldTypeInteger,
+		"analysis_url_cache_ttl_seconds": pluginapi.ConfigFieldTypeInteger,
+		"trace_enabled":                  pluginapi.ConfigFieldTypeBoolean,
+	}
+	for _, field := range result.Metadata.ConfigFields {
+		if field.Description == "" {
+			t.Errorf("field %q has no description", field.Name)
+		}
+		if wantType, ok := wantFields[field.Name]; ok {
+			if field.Type != wantType {
+				t.Errorf("field %q type = %q, want %q", field.Name, field.Type, wantType)
+			}
+			delete(wantFields, field.Name)
+		}
+		if field.Name == "language" {
+			want := []string{"zh", "en", "auto"}
+			if len(field.EnumValues) != len(want) {
+				t.Errorf("language enum = %#v, want %#v", field.EnumValues, want)
+			} else {
+				for i := range want {
+					if field.EnumValues[i] != want[i] {
+						t.Errorf("language enum = %#v, want %#v", field.EnumValues, want)
+						break
+					}
+				}
+			}
+		}
+	}
+	if len(wantFields) != 0 {
+		t.Fatalf("registration is missing representative config fields: %#v", wantFields)
+	}
+	afterAuth.RLock()
+	handler := afterAuth.handler
+	afterAuth.RUnlock()
+	if handler == nil {
+		t.Fatal("empty initial registration did not install the default host runtime")
+	}
+}
+
+func TestLifecycleWithIncompleteConfigKeepsRegistrationMetadata(t *testing.T) {
+	defer shutdownPlugin()
+	request, err := json.Marshal(lifecycleRequest{
+		SchemaVersion: pluginabi.SchemaVersion,
+		ConfigYAML:    []byte("enabled: true\npriority: 100\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := handleMethod(pluginabi.MethodPluginRegister, request)
+	if err != nil {
+		t.Fatalf("metadata-only registration failed: %v", err)
+	}
+	var env envelope
+	if err := json.Unmarshal(raw, &env); err != nil || !env.OK {
+		t.Fatalf("registration envelope = %s, err=%v", raw, err)
+	}
+	var result registration
+	if err := json.Unmarshal(env.Result, &result); err != nil {
+		t.Fatal(err)
+	}
+	if len(result.Metadata.ConfigFields) == 0 {
+		t.Fatal("metadata-only registration did not expose ConfigFields")
+	}
+	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, request); err != nil {
+		t.Fatalf("incomplete reconfigure removed registration metadata: %v", err)
+	}
+	malformed, err := json.Marshal(lifecycleRequest{
+		SchemaVersion: pluginabi.SchemaVersion,
+		ConfigYAML:    []byte("vision_model: [\n"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := handleMethod(pluginabi.MethodPluginReconfigure, malformed); err != nil {
+		t.Fatalf("malformed user configuration removed registration metadata: %v", err)
 	}
 }
 
@@ -155,16 +238,16 @@ func TestABIAdmissionBoundsConcurrentCopies(t *testing.T) {
 	if abiInFlightRequests.Load() != 0 || abiInFlightBytes.Load() != 0 {
 		t.Fatal("ABI admission state was not clean at test start")
 	}
-	if tryAcquireABIAdmission(maxABIBudgetBytes + 1) {
-		t.Fatal("request larger than process byte budget was admitted")
+	if got := acquireABIAdmission(maxABIBudgetBytes + 1); got != abiAdmissionRequestBudget {
+		t.Fatalf("oversized request failure = %q", got)
 	}
 	for i := int64(0); i < maxABIInFlightRequests; i++ {
-		if !tryAcquireABIAdmission(1) {
-			t.Fatalf("admission slot %d was unexpectedly denied", i)
+		if got := acquireABIAdmission(1); got != abiAdmissionOK {
+			t.Fatalf("admission slot %d was unexpectedly denied: %q", i, got)
 		}
 	}
-	if tryAcquireABIAdmission(1) {
-		t.Fatal("request count budget was exceeded")
+	if got := acquireABIAdmission(1); got != abiAdmissionRequestCount {
+		t.Fatalf("request-count failure = %q", got)
 	}
 	for i := int64(0); i < maxABIInFlightRequests; i++ {
 		releaseABIAdmission(1)
@@ -172,6 +255,13 @@ func TestABIAdmissionBoundsConcurrentCopies(t *testing.T) {
 	if abiInFlightRequests.Load() != 0 || abiInFlightBytes.Load() != 0 {
 		t.Fatal("ABI admission state did not release cleanly")
 	}
+	if got := acquireABIAdmission(maxABIBudgetBytes - 1); got != abiAdmissionOK {
+		t.Fatalf("large admission = %q", got)
+	}
+	if got := acquireABIAdmission(2); got != abiAdmissionProcessBudget {
+		t.Fatalf("process-budget failure = %q", got)
+	}
+	releaseABIAdmission(maxABIBudgetBytes - 1)
 }
 
 func TestOversizedInterceptorsTerminateWith413WithoutDecode(t *testing.T) {
@@ -218,15 +308,6 @@ func TestWriteResponseReportsUnwritableDestination(t *testing.T) {
 }
 
 func TestShutdownSupersedesBlockedConcurrentConfigure(t *testing.T) {
-	oldKey, hadKey := os.LookupEnv("DEEPSEEK_VISION_API_KEY")
-	_ = os.Setenv("DEEPSEEK_VISION_API_KEY", "rpc-fixture-key")
-	defer func() {
-		if hadKey {
-			_ = os.Setenv("DEEPSEEK_VISION_API_KEY", oldKey)
-		} else {
-			_ = os.Unsetenv("DEEPSEEK_VISION_API_KEY")
-		}
-	}()
 	configureLocked := make(chan struct{})
 	shutdownSignaled := make(chan struct{})
 	releaseConfigure := make(chan struct{})
@@ -246,7 +327,10 @@ func TestShutdownSupersedesBlockedConcurrentConfigure(t *testing.T) {
 		shutdownPlugin()
 	}()
 
-	req := []byte(`{"schema_version":2,"config_yaml":"dmlzaW9uX2Jhc2VfdXJsOiBodHRwOi8vMTI3LjAuMC4xOjgzMTcvdjEKdmlzaW9uX21vZGVsOiBjb25jdXJyZW50"}`)
+	req, err := json.Marshal(lifecycleRequest{SchemaVersion: 2, ConfigYAML: []byte("vision_model: concurrent")})
+	if err != nil {
+		t.Fatal(err)
+	}
 	configureResult := make(chan error, 1)
 	go func() {
 		_, err := handleMethod("plugin.reconfigure", req)

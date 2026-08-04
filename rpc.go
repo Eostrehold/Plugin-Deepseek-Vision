@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -30,6 +29,11 @@ type envelopeError struct {
 type lifecycleRequest struct {
 	ConfigYAML    []byte `json:"config_yaml"`
 	SchemaVersion uint32 `json:"schema_version"`
+}
+
+type requestInterceptRPC struct {
+	pluginapi.RequestInterceptRequest
+	HostCallbackID string `json:"host_callback_id,omitempty"`
 }
 
 type registration struct {
@@ -115,28 +119,32 @@ func configure(method string, raw []byte) error {
 	if req.SchemaVersion < pluginabi.SchemaVersion {
 		return fmt.Errorf("host schema version %d is unsupported; schema version %d or newer is required", req.SchemaVersion, pluginabi.SchemaVersion)
 	}
+	var cfg *config.Config
 	if len(strings.TrimSpace(string(req.ConfigYAML))) == 0 {
-		if method == pluginabi.MethodPluginRegister {
-			// Registration without configuration is metadata-only. The host must
-			// send an explicit reconfigure before image interception can be ready.
+		// Configuration is allowed to be incomplete while an operator edits it.
+		// Initial registration can safely install host-backed defaults; later empty
+		// edits preserve the last-known-good runtime.
+		if method != pluginabi.MethodPluginRegister {
 			return nil
 		}
-		return errors.New("explicit plugin configuration is required")
+		cfg = config.Default()
+	} else {
+		// Validate before entering the lifecycle critical section so a malformed
+		// update never delays shutdown. The validated snapshot is published after
+		// the runtime gate is installed below.
+		var err error
+		cfg, err = config.ParseYAML(req.ConfigYAML)
+		if err != nil {
+			// User configuration errors are non-fatal lifecycle events. Returning an
+			// RPC error makes CLIProxyAPI drop this plugin from its active snapshot,
+			// which also removes ConfigFields until restart. Keep the last known-good
+			// runtime (or the unavailable fail-closed fallback) and publish metadata.
+			return nil
+		}
 	}
-	// Validate before entering the lifecycle critical section so a malformed
-	// update never delays shutdown. The validated snapshot is published after
-	// the runtime gate is installed below.
-	cfg, err := config.ParseYAML(req.ConfigYAML)
-	if err != nil {
-		return fmt.Errorf("validate plugin configuration: %w", err)
+	if cfg == nil {
+		return nil
 	}
-	if cfg == nil || strings.TrimSpace(cfg.VisionBaseURL) == "" {
-		return errors.New("vision_base_url must be explicitly configured")
-	}
-	if strings.TrimSpace(os.Getenv(cfg.VisionAPIKeyEnv)) == "" {
-		return errors.New("vision API key environment variable is unavailable")
-	}
-
 	lifecycleMu.Lock()
 	defer lifecycleMu.Unlock()
 	runLifecycleTestHook("configure_locked")
@@ -182,26 +190,16 @@ func pluginRegistration() registration {
 		Metadata: pluginapi.Metadata{
 			Name:             pluginName,
 			Version:          pluginVersion,
-			Author:           "router-for-me",
+			Author:           "Zesuy",
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "target_models", Type: pluginapi.ConfigFieldTypeArray, Description: "Final upstream models eligible for image preprocessing."},
-				{Name: "vision_base_url", Type: pluginapi.ConfigFieldTypeString, Description: "OpenAI-compatible VLM base URL."},
-				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "VLM model identifier."},
-				{Name: "vision_api_key_env", Type: pluginapi.ConfigFieldTypeString, Description: "Environment variable containing the VLM API key."},
-				{Name: "language", Type: pluginapi.ConfigFieldTypeString, Description: "Preferred language for visual analysis."},
-				{Name: "request_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Total preprocessing deadline."},
-				{Name: "per_call_timeout_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "Per-image VLM request deadline."},
-				{Name: "retry_max_attempts", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum attempts for transient VLM failures."},
-				{Name: "max_concurrency", Type: pluginapi.ConfigFieldTypeInteger, Description: "Global concurrent VLM call limit."},
-				{Name: "max_images_per_request", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum image blocks in a request."},
-				{Name: "max_request_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum intercepted request size."},
-				{Name: "max_image_reference_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum image URL or data reference size."},
-				{Name: "max_response_bytes", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum VLM response size."},
-				{Name: "max_result_chars", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum extracted VLM result characters."},
-				{Name: "cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "Maximum cached VLM results."},
-				{Name: "cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "VLM result cache lifetime."},
+				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
+				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},
+				{Name: "analysis_cache_size", Type: pluginapi.ConfigFieldTypeInteger, Description: "视觉分析缓存条目数，0 关闭缓存。默认值 / Analysis cache entries; 0 disables. Default: 128."},
+				{Name: "analysis_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "data URI 分析缓存秒数。默认值 / Data-URI analysis cache TTL in seconds. Default: 900."},
+				{Name: "analysis_url_cache_ttl_seconds", Type: pluginapi.ConfigFieldTypeInteger, Description: "URL 图片分析缓存秒数。默认值 / URL-image analysis cache TTL in seconds. Default: 120."},
+				{Name: "trace_enabled", Type: pluginapi.ConfigFieldTypeBoolean, Description: "完整明文调试 trace；包含请求、图片引用和模型结果，仅临时开启。默认值 / Full plaintext debug trace; includes requests, image references, and model results. Enable temporarily. Default: false."},
 			},
 		},
 		Capabilities: registrationCapability{RequestInterceptor: true},
@@ -217,9 +215,16 @@ func passThroughRequest(raw []byte) ([]byte, error) {
 }
 
 func interceptAfterAuth(raw []byte) ([]byte, error) {
-	var req pluginapi.RequestInterceptRequest
-	if err := json.Unmarshal(raw, &req); err != nil {
+	var wrapped requestInterceptRPC
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
 		return nil, fmt.Errorf("decode request intercept: %w", err)
+	}
+	req := wrapped.RequestInterceptRequest
+	if wrapped.HostCallbackID != "" {
+		if req.Metadata == nil {
+			req.Metadata = make(map[string]any)
+		}
+		req.Metadata[interceptor.HostCallbackIDMetadataKey] = wrapped.HostCallbackID
 	}
 	afterAuth.RLock()
 	handler := afterAuth.handler

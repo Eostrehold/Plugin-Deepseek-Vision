@@ -2,27 +2,27 @@
 
 ## Credentials and data
 
-- Store the VLM key in `DEEPSEEK_VISION_API_KEY` (or the configured environment
-  variable), never in YAML, source, Dockerfiles, ZIP files or CI variables.
+- The plugin reuses a model and credential already configured in CLIProxyAPI;
+  it has no key field, environment-variable credential, or external backend.
 - The plugin does not log Authorization headers, complete endpoint URLs,
   image data URIs or upstream response bodies.
-- Cache entries contain only visual-analysis text and metadata; raw image bytes
-  are not retained.
+- The plugin caches only derived analysis text and SHA-256 keys. It never keeps
+  raw image bytes or the original image reference in cache entries; URL entries
+  use a shorter TTL because their content may change.
 - Package scripts scan source and generated archives for obvious key markers and
   fail closed. This is a guardrail, not a replacement for organization-wide
   secret scanning.
 
 ## Network
 
-The VLM client uses an owned HTTP client with a total timeout, TLS handshake and
-response-header deadlines, redirects disabled, response-size limits and finite
-retry/backoff. Literal loopback/private/link-local image URLs are rejected;
-deployment DNS names still need an egress/allowlist policy. Prefer HTTPS for
-non-local endpoints.
+CLIProxyAPI owns provider transport, retries, concurrency, and credential
+handling. Literal loopback/private/link-local image
+URLs are rejected; deployment DNS names still need an egress/allowlist policy.
+Prefer HTTPS for remote image references.
 
 The plugin sends the image reference and a bounded focus hint to the configured
-VLM. Do not point `vision_base_url` at an untrusted service. Review retention,
-access control and data residency of the chosen VLM provider.
+VLM. CLIProxyAPI chooses the provider for `vision_model`. Review retention,
+access control and data residency of the chosen provider.
 
 ## Prompt injection and failure safety
 
@@ -31,7 +31,20 @@ not to follow instructions found inside the image. If any image analysis fails,
 the complete request is terminated before the DeepSeek executor receives it;
 partial rewrites and accidental original-image forwarding are not allowed.
 
-Keep `max_images_per_request`, body/reference limits and `max_concurrency`
-small enough for the deployment. These are both resource controls and abuse
-boundaries. Rotate the key after development or if it may have appeared in a
-shell history, process listing or external logs.
+Keep `max_images_per_request` and body/reference limits small enough for the
+deployment. These are both resource controls and abuse boundaries.
+
+Configured-limit and ABI-admission rejections emit a structured warning through
+the host logger. Diagnostics are intentionally restricted to limit names,
+integer sizes/counts, active limit values and configuration generation; image
+references, request bodies, headers and credentials are never included.
+
+## Opt-in plaintext trace
+
+`trace_enabled` deliberately changes the privacy boundary for debugging. It
+writes complete conversation bodies, image URLs/data URIs, focus hints, VLM
+requests/responses, and rewritten bodies beneath
+`logs/deepseek-vision-trace/`. Credential-like header and metadata fields are
+still forcibly redacted, but image URLs may themselves contain signed query
+parameters. Protect the mounted logs directory, enable the switch only for a
+bounded reproduction, and securely remove retained bundles afterward.

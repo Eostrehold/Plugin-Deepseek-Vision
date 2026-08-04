@@ -43,6 +43,35 @@ store install has multiple versions, the pinned `store.version` must match an
 existing artifact; reinstall the requested archive if the host cleaned up an
 unselected old file.
 
+## CPAMC shows no configurable fields
+
+CLIProxyAPI exposes `config_fields` only after a plugin has registered. A
+discovered but disabled or unconfigured binary can therefore show the generic
+"no declared visual configuration fields" message before its first load.
+
+For first-time CPAMC setup, enable the plugin and save once, wait until its
+status becomes `registered`, then reopen the configuration drawer. Invalid or
+incomplete edits never return a lifecycle error to the host: the plugin stays
+registered and keeps the last known-good runtime, or remains safely unavailable
+when no valid generation exists. Correct the field and save again; restarting
+CLIProxyAPI is not required.
+
+Verify what the host received from the plugin with:
+
+```bash
+curl -fsS -H 'Authorization: Bearer <management-key>' \
+  http://127.0.0.1:8085/v0/management/plugins \
+  | jq '.plugins[]
+      | select(.id == "deepseek-vision")
+      | {registered, effective_enabled, config_fields}'
+```
+
+A current binary reports three essential fields: backend, model, and language.
+If `registered` remains `false`, restart
+CLIProxyAPI after replacing the library and inspect the plugin registration
+error in the host log; an old binary or failed ABI load cannot publish field
+metadata.
+
 ## Requests pass through unexpectedly
 
 The plugin intentionally handles only `/v1/responses`, source format
@@ -61,10 +90,9 @@ required or probed service in this release.
 
 ## HTTP 502 from image requests
 
-Check that the key environment variable is present inside the CLIProxyAPI
-process/container and that `vision_base_url` is reachable from that runtime.
-The client appends `/responses` to the configured base. 401/403, malformed VLM
-JSON, response-size limits and exhausted retries are intentional hard failures.
+Check that `vision_model` exists in CLIProxyAPI and accepts image input through
+OpenAI Responses. Provider errors, malformed VLM JSON, response-size limits and
+exhausted host retries are intentional failures.
 The error returned to the client is redacted; inspect only service-side status
 metrics, never enable logging of request bodies or Authorization headers. For
 eligible Responses image requests, plugin failures are terminal (typically
@@ -79,7 +107,22 @@ plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
 
 ## Slow or rejected requests
 
-Reduce `max_images_per_request` or increase the bounded timeouts only after
-checking VLM latency. A 413 indicates a configured body/reference/ABI limit;
-429/5xx responses are retried only within the total deadline. Caches are
-process-local and are cleared after reconfigure or shutdown.
+Reduce `max_images_per_request` or increase the bounded total timeout only after
+checking VLM latency. A 413 response now distinguishes request-body,
+image-reference and image-count limits. Check the matching CLIProxyAPI warning
+from `host.log` for `limit_kind`, `actual`, `maximum`, active size settings and
+`config_generation`; ABI admission warnings include their byte budget and
+in-flight usage. This ordinary host-log warning never contains image data or
+credentials. Provider retry behavior is controlled by CLIProxyAPI.
+
+For a multi-turn request whose ordinary 413 warning is insufficient, enable:
+
+```yaml
+trace_enabled: true
+```
+
+Reproduce once, then inspect `logs/deepseek-vision-trace/events.jsonl` and the
+referenced request bundle. `20-discovery-error.json` includes total, unique,
+duplicate, last-image-item, earlier-item, content, and function-output image
+counts. The inbound body and image references are preserved in plaintext, so
+disable tracing and remove the bundle after diagnosis.

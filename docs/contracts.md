@@ -19,7 +19,7 @@
 
   失败为 `{"ok":false,"error":{"code":"...","message":"..."}}`。`result` 和 `error` 不同时存在。
 
-- `plugin.register` 和 `plugin.reconfigure` 的生命周期请求使用 SDK 示例定义的 snake_case 字段 `config_yaml`（JSON 中为 base64 字符串）和 `schema_version`；实现必须拒绝低于 schema 2 的宿主。该例外只适用于生命周期请求，不能推广到下述 RequestIntercept 结构。
+- `plugin.register` 和 `plugin.reconfigure` 的生命周期请求使用 SDK 示例定义的 snake_case 字段 `config_yaml`（JSON 中为 base64 字符串）和 `schema_version`；实现必须拒绝低于 schema 2 的宿主。首次注册的空 YAML 安装默认 host runtime；后续空编辑或校验失败保持最近一次成功配置且不影响注册。没有任何可用 runtime 的其他异常状态保持 fail-closed unavailable。该例外只适用于生命周期请求，不能推广到下述 RequestIntercept 结构。
 - 注册只声明 `request_interceptor: true`；不声明 request lifecycle capability，不要求或实现生命周期完成回调，也不注册模型、executor 或其他扩展点。
 
 ## 2. RequestIntercept JSON
@@ -79,10 +79,14 @@ alias 解析完全由 CLIProxyAPI 宿主负责；插件不重写 alias，也不�
 
 ## 4. 单 VLM 处理协议
 
-每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。VLM 使用
-OpenAI-compatible `POST {vision_base_url}/responses`，默认模型为
-`gpt-5.6-luna`。`vision_base_url` 必须显式配置，不存在网络地址默认值；
-API key 只从配置指定的环境变量读取，绝不进入仓库或日志。
+每张输入图片只发起一次 VLM 调用，不再拆分 OCR 与独立视觉服务。插件通过
+CLIProxyAPI 的 `host.model.execute` 执行 OpenAI Responses 请求，默认模型为
+`gpt-5.6-luna`。模型路由、凭证、供应商协议转换、传输和重试由宿主管理；插件不读取
+额外 key，宿主跳过当前插件以阻止嵌套调用递归。插件不提供 external HTTP 后端。
+
+同一请求内具有相同图片引用、模型、规范化语言和完整提示词的图片块必须合并为一次
+宿主调用。成功的派生文本可进入有界代际缓存；缓存键不得保留原图片引用，失败结果
+不得缓存。data URI 使用较长 TTL，可能变化的 URL 使用较短 TTL；重配置必须换新缓存。
 
 请求核心形状：
 
@@ -141,9 +145,18 @@ Visual description:
 
 具体状态语义固定为：正常 runtime 下 JSON 结构错误返回 400；不支持的图片来源
 （例如只有 `file_id`）返回 422；请求体、图片引用或图片数量超过配置限制返回
-413；VLM、超时、非法/空结果以及原子改写失败返回 502。runtime 在正常解析前不可用
+413，客户端错误文案必须指出具体限制类别，同时通过宿主 `host.log` 记录不含请求内容的
+实际值、上限与配置 generation；VLM、超时、非法/空结果以及原子改写失败返回 502。runtime 在正常解析前不可用
 时，目标模型的格式错误或疑似图片结构统一保守返回 502。对已经命中门控且发现图片
 的请求，任何失败都必须终止，不能把原始图片作为降级路径继续交给 DeepSeek。非目标
 模型、其他路径、其他 source format 和无图请求则按门控规则原样旁路。
 
-只有所有图片都成功并完成 body 改写后，拦截器才返回成功结果；失败路径绝不向 DeepSeek executor 发起调用。HTTP client 必须设置总请求硬超时、响应体上限和可取消 context；重试次数受总 deadline 限制。
+只有所有图片都成功并完成 body 改写后，拦截器才返回成功结果；失败路径绝不向
+DeepSeek executor 发起调用。插件必须设置总预处理硬超时和响应体上限，并把可取消
+context 传给 `host.model.execute`；供应商传输与重试策略由 CLIProxyAPI 宿主负责。
+
+`trace_enabled` 默认关闭。开启后，插件可在 `logs/deepseek-vision-trace/` 保存完整明文
+调试上下文，包括原始多轮请求、图片引用、focus hint、缓存计划、VLM 请求/响应和改写
+结果；Authorization、API key/token/secret/credential/cookie 类 header、query 与 metadata
+字段以及内部 host callback ID 必须强制脱敏。trace 文件错误不得改变请求结果、运行时
+generation 或插件注册状态。
