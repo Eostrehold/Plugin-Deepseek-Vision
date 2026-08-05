@@ -103,15 +103,16 @@ final Model ∈ target_models
 ### 1. 安装 v0.1.1
 
 从 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载
-`deepseek-vision_0.1.1_linux_amd64.zip`，校验后把唯一的动态库安装到插件目录：
+`deepseek-vision_0.1.1_linux_amd64.zip` 与外部 `checksums.txt`，校验 ZIP 后把其中唯一的动态库安装到插件目录：
 
 ```bash
+sha256sum -c checksums.txt
+
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
 find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
 unzip -o deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
-(cd "$plugin_dir" && sha256sum -c checksums.txt)
 ```
 
 手动模式下活动文件必须是 `plugins/linux/amd64/deepseek-vision.so`，不要同时保留旧的版本化 `.so`。

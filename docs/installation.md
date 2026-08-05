@@ -15,6 +15,7 @@ Manual mode is intentionally unambiguous: the directory contains exactly one
 ```bash
 VERSION=0.1.1 ./scripts/package.sh
 ./scripts/checksum.sh
+(cd dist && sha256sum -c checksums.txt)
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
 # Remove stale candidates for this plugin ID before installing the new file.
@@ -23,7 +24,6 @@ rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
 unzip -o dist/deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
 test -f "$plugin_dir/deepseek-vision.so"
 test "$(find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision*.so' | wc -l)" -eq 1
-(cd "$plugin_dir" && sha256sum -c checksums.txt)
 ```
 
 Restart CLIProxyAPI after replacing the library. Verify that the management
@@ -65,8 +65,8 @@ payload while installing it:
 ```bash
 plugin_dir=plugins/linux/amd64
 tmp_dir=$(mktemp -d)
+(cd dist && sha256sum -c checksums.txt)
 unzip -q dist/deepseek-vision_0.1.1_linux_amd64.zip -d "$tmp_dir"
-(cd "$tmp_dir" && sha256sum -c checksums.txt)
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir"/deepseek-vision-v*.so
 install -m 0755 "$tmp_dir/deepseek-vision.so" "$plugin_dir/deepseek-vision-v0.1.1.so"
 rm -rf "$tmp_dir"

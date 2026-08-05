@@ -24,17 +24,17 @@ archive = dist / f"deepseek-vision_{version}_linux_amd64.zip"
 unpacked = Path(os.environ["ARCHIVE_ROOT"])
 with ZipFile(archive) as zf:
     names = zf.namelist()
-    if names != ["deepseek-vision.so", "checksums.txt"]:
+    if names != ["deepseek-vision.so"]:
         raise SystemExit(f"unexpected ZIP members: {names!r}")
     zf.extractall(unpacked)
 so = unpacked / "deepseek-vision.so"
 if so.stat().st_mode & 0o400 == 0:
     raise SystemExit("plugin artifact is not readable")
-line = (unpacked / "checksums.txt").read_text().strip()
-want = hashlib.sha256(so.read_bytes()).hexdigest()
-if line != f"{want}  deepseek-vision.so":
-    raise SystemExit("embedded plugin checksum mismatch")
 blob = archive.read_bytes()
+line = (dist / "checksums.txt").read_text().strip()
+want = hashlib.sha256(blob).hexdigest()
+if line != f"{want}  {archive.name}":
+    raise SystemExit("release archive checksum mismatch")
 if re.search(rb"sk-[A-Za-z0-9]{12,}", blob) or re.search(rb"Bearer\s+[A-Za-z0-9._-]{16,}", blob):
     raise SystemExit("possible credential marker in archive")
 print(f"smoke-verified {archive}")

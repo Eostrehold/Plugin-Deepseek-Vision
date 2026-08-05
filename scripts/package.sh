@@ -61,7 +61,6 @@ if rg -n --hidden -g '!.git/**' -g '!dist/**' -g '!*.so' \
 fi
 
 VERSION="$version" ARTIFACT="$artifact" ARCHIVE="$archive" python3 - <<'PY'
-import hashlib
 import os
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile, ZipInfo
@@ -70,22 +69,16 @@ artifact = Path(os.environ["ARTIFACT"])
 archive = Path(os.environ["ARCHIVE"])
 version = os.environ["VERSION"]
 payload = artifact.read_bytes()
-digest = hashlib.sha256(payload).hexdigest()
-checksums = f"{digest}  deepseek-vision.so\n"
 
 archive.parent.mkdir(parents=True, exist_ok=True)
 fixed_date = (2020, 1, 1, 0, 0, 0)
 with ZipFile(archive, "w", compression=ZIP_DEFLATED, compresslevel=9) as zf:
-    for name, data, mode in (
-        ("deepseek-vision.so", payload, 0o755),
-        ("checksums.txt", checksums.encode("ascii"), 0o644),
-    ):
-        info = ZipInfo(name, date_time=fixed_date)
-        info.compress_type = ZIP_DEFLATED
-        info.create_system = 3
-        info.external_attr = mode << 16
-        info.comment = f"deepseek-vision {version}".encode("ascii") if name.endswith(".so") else b""
-        zf.writestr(info, data)
+    info = ZipInfo("deepseek-vision.so", date_time=fixed_date)
+    info.compress_type = ZIP_DEFLATED
+    info.create_system = 3
+    info.external_attr = 0o755 << 16
+    info.comment = f"deepseek-vision {version}".encode("ascii")
+    zf.writestr(info, payload)
 print(f"packaged {archive} ({archive.stat().st_size} bytes)")
 PY
 

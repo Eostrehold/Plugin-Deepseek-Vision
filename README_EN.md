@@ -106,17 +106,18 @@ final Model in target_models
 
 ### 1. Install v0.1.1
 
-Download `deepseek-vision_0.1.1_linux_amd64.zip` from
-[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases), verify it, and install the only dynamic
-library in the manual plugin directory:
+Download `deepseek-vision_0.1.1_linux_amd64.zip` and the external `checksums.txt` from
+[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases), verify the ZIP, and install its only
+dynamic library in the manual plugin directory:
 
 ```bash
+sha256sum -c checksums.txt
+
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
 find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
 unzip -o deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
-(cd "$plugin_dir" && sha256sum -c checksums.txt)
 ```
 
 Manual mode requires `plugins/linux/amd64/deepseek-vision.so` with no stale versioned `.so` beside it. See the

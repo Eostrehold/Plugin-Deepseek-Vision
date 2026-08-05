@@ -10,10 +10,11 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-The package smoke test builds with CGO, verifies `cliproxy_plugin_init`, embeds
-and checks the plugin SHA-256, checks ZIP root members and scans the archive for
-obvious credential material. It uses a temporary directory and removes it on
-exit. The regular package command writes only to the ignored `dist/` directory.
+The package smoke test builds with CGO, verifies `cliproxy_plugin_init`, checks
+the external archive SHA-256, requires the ZIP root to contain only
+`deepseek-vision.so`, and scans the archive for obvious credential material. It
+uses a temporary directory and removes it on exit. The regular package command
+writes only to the ignored `dist/` directory.
 
 For Docker validation, first check the rendered configuration without starting
 services:
