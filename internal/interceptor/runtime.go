@@ -218,9 +218,13 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	resp = passthrough(req)
 	started := time.Now()
 	var traceSession *tracelog.Session
+	protocol := downstream.ProtocolResponses
+	if adapter, ok := requestAdapter(req); ok {
+		protocol = adapter.Protocol()
+	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			resp = terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
+			resp = terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
 		}
 		safeTraceResult(traceSession, started, resp)
 		err = nil
@@ -233,8 +237,8 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		// treat callback errors as pass-through, so return a concrete 502 for
 		// targeted image-shaped Responses requests and retain passthrough for
 		// unrelated models and requests without image candidates.
-		if unavailableImageRequest(req, r.targetModelSnapshot()) {
-			return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
+		if unavailableAdapter, unavailable := unavailableImageRequest(req, r.targetModelSnapshot()); unavailable {
+			return terminate(unavailableAdapter.Protocol(), http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
 		}
 		return resp, nil
 	}
@@ -243,6 +247,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	if !eligibleRequest {
 		return resp, nil
 	}
+	protocol = adapter.Protocol()
 	traceSession = r.safeStartFullTrace(state, req)
 	baseCtx := context.Background()
 	if callbackID, _ := req.Metadata[HostCallbackIDMetadataKey].(string); callbackID != "" {
@@ -259,12 +264,12 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		MaxResultChars:    cfg.MaxResultChars,
 	})
 	if ctx.Err() != nil {
-		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing deadline exceeded"), nil
+		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing deadline exceeded"), nil
 	}
 	if planErr != nil {
 		traceDiscoveryError(traceSession, planErr)
 		r.tracePlannerLimit(ctx, state, planErr)
-		return terminateForError(planErr), nil
+		return terminateForError(protocol, planErr), nil
 	}
 	if !plan.HasImages() {
 		traceDiscovery(traceSession, plan)
@@ -318,14 +323,14 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		if rewriteErr != nil {
 			traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 			r.tracePlannerLimit(ctx, state, rewriteErr)
-			return terminateForError(rewriteErr), nil
+			return terminateForError(protocol, rewriteErr), nil
 		}
 		traceRewrite(traceSession, req.Body, rewritten, len(images))
 		return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
 	}
 	analyzer, analyzerErr := state.getAnalyzer()
 	if analyzerErr != nil {
-		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
+		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
 	}
 	var wg sync.WaitGroup
 	var firstErr error
@@ -370,13 +375,13 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	hasErr := firstErr != nil
 	errMu.Unlock()
 	if hasErr {
-		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
+		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
 	}
 	rewritten, rewriteErr := plan.RewriteGroupsText(results)
 	if rewriteErr != nil {
 		traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 		r.tracePlannerLimit(ctx, state, rewriteErr)
-		return terminateForError(rewriteErr), nil
+		return terminateForError(protocol, rewriteErr), nil
 	}
 	traceRewrite(traceSession, req.Body, rewritten, len(images))
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
@@ -530,8 +535,8 @@ func HandleUnavailable(req pluginapi.RequestInterceptRequest, targetModels ...st
 	if len(targetModels) == 0 {
 		targetModels = config.Default().TargetModels
 	}
-	if unavailableImageRequest(req, targetModels) {
-		return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
+	if adapter, unavailable := unavailableImageRequest(req, targetModels); unavailable {
+		return terminate(adapter.Protocol(), http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
 	}
 	return passthrough(req), nil
 }
@@ -540,38 +545,41 @@ func eligible(req pluginapi.RequestInterceptRequest, cfg *config.Config) (downst
 	if cfg == nil {
 		return nil, false
 	}
-	path, ok := req.Metadata["request_path"].(string)
-	if !ok || req.Model == "" {
+	if req.Model == "" {
 		return nil, false
 	}
-	adapter, ok := downstream.Match(req.SourceFormat, path)
+	adapter, ok := requestAdapter(req)
 	if !ok || !targetModelMatches(req.Model, cfg.TargetModels) {
 		return nil, false
 	}
 	return adapter, true
 }
 
+func requestAdapter(req pluginapi.RequestInterceptRequest) (downstream.Adapter, bool) {
+	path, ok := req.Metadata["request_path"].(string)
+	if !ok {
+		return nil, false
+	}
+	return downstream.Match(req.SourceFormat, path)
+}
+
 func passthrough(req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: req.Body}
 }
 
-func unavailableImageRequest(req pluginapi.RequestInterceptRequest, targetModels []string) bool {
+func unavailableImageRequest(req pluginapi.RequestInterceptRequest, targetModels []string) (downstream.Adapter, bool) {
 	if req.Model == "" || !targetModelMatches(req.Model, targetModels) {
-		return false
+		return nil, false
 	}
-	path, ok := req.Metadata["request_path"].(string)
+	adapter, ok := requestAdapter(req)
 	if !ok {
-		return false
-	}
-	adapter, ok := downstream.Match(req.SourceFormat, path)
-	if !ok {
-		return false
+		return nil, false
 	}
 	// Discovery is deliberately run even while unavailable: raw marker scans
 	// can be bypassed with JSON escapes or whitespace, while the parser provides
 	// the same fail-closed structural decision used by the normal path.
 	plan, err := adapter.Discover(req.Body)
-	return err != nil || plan.HasImages()
+	return adapter, err != nil || plan.HasImages()
 }
 
 func targetModelMatches(model string, targetModels []string) bool {
@@ -586,19 +594,30 @@ func targetModelMatches(model string, targetModels []string) bool {
 	return false
 }
 
-func terminateForError(err error) pluginapi.RequestInterceptResponse {
+func terminateForError(protocol downstream.Protocol, err error) pluginapi.RequestInterceptResponse {
 	var planner *downstream.Error
 	if errors.As(err, &planner) {
 		switch planner.StatusCode {
 		case http.StatusBadRequest:
-			return terminate(http.StatusBadRequest, "invalid_request_error", "invalid Responses request")
+			return terminate(protocol, http.StatusBadRequest, "invalid_request_error", invalidRequestMessage(protocol))
 		case http.StatusRequestEntityTooLarge:
-			return terminate(http.StatusRequestEntityTooLarge, "invalid_request_error", publicLimitMessage(planner.Limit, planner.Actual, planner.Maximum))
+			return terminate(protocol, http.StatusRequestEntityTooLarge, "invalid_request_error", publicLimitMessage(planner.Limit, planner.Actual, planner.Maximum))
 		case http.StatusUnprocessableEntity:
-			return terminate(http.StatusUnprocessableEntity, "invalid_request_error", "unsupported image source")
+			return terminate(protocol, http.StatusUnprocessableEntity, "invalid_request_error", "unsupported image source")
 		}
 	}
-	return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
+	return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
+}
+
+func invalidRequestMessage(protocol downstream.Protocol) string {
+	switch protocol {
+	case downstream.ProtocolChat:
+		return "invalid Chat Completions request"
+	case downstream.ProtocolClaude:
+		return "invalid Messages request"
+	default:
+		return "invalid Responses request"
+	}
 }
 
 func publicLimitMessage(limit downstream.LimitKind, actual, maximum int) string {
@@ -628,8 +647,19 @@ func publicLimitMessage(limit downstream.LimitKind, actual, maximum int) string 
 	}
 }
 
-func terminate(status int, typ, message string) pluginapi.RequestInterceptResponse {
-	body, _ := json.Marshal(map[string]any{"error": map[string]string{"type": typ, "message": message}})
+func terminate(protocol downstream.Protocol, status int, typ, message string) pluginapi.RequestInterceptResponse {
+	var payload any = map[string]any{"error": map[string]string{"type": typ, "message": message}}
+	if protocol == downstream.ProtocolClaude {
+		claudeType := "invalid_request_error"
+		if status >= http.StatusInternalServerError {
+			claudeType = "api_error"
+		}
+		payload = map[string]any{
+			"type":  "error",
+			"error": map[string]string{"type": claudeType, "message": message},
+		}
+	}
+	body, _ := json.Marshal(payload)
 	return pluginapi.RequestInterceptResponse{
 		Terminate:       true,
 		StatusCode:      status,

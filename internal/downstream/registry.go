@@ -41,6 +41,7 @@ func (responsesAdapter) Discover(body []byte, options ...Options) (Plan, error) 
 
 var adapters = map[route]Adapter{
 	{sourceFormat: "openai-response", path: "/v1/responses"}: responsesAdapter{},
+	{sourceFormat: "openai", path: "/v1/chat/completions"}:   chatAdapter{},
 }
 
 // Match returns the adapter for an exact host source-format and request-path
