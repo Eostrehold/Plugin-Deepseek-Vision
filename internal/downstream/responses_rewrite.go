@@ -1,4 +1,4 @@
-package responses
+package downstream
 
 import (
 	"encoding/json"
@@ -35,7 +35,7 @@ var (
 // Rewrite replaces every discovered image with one input_text block. It first
 // validates every result, then operates on a fresh tree, so a missing or bad
 // result can never produce a partially rewritten body.
-func (p *Plan) Rewrite(results []ImageResult) ([]byte, error) {
+func (p *responsesPlan) Rewrite(results []ImageResult) ([]byte, error) {
 	if p == nil {
 		return nil, plannerError(ErrorMalformedRequest, 400, "nil response plan", "body")
 	}
@@ -138,7 +138,7 @@ func (p *Plan) Rewrite(results []ImageResult) ([]byte, error) {
 // RewriteText is a convenience adapter for analyzers that return one plain
 // string per image. Each string is parsed with ParseVLMText and then passed
 // through the same all-or-nothing Rewrite path.
-func (p *Plan) RewriteText(results []string) ([]byte, error) {
+func (p *responsesPlan) RewriteText(results []string) ([]byte, error) {
 	structured := make([]ImageResult, len(results))
 	for i, result := range results {
 		structured[i] = ParseVLMText(result)
@@ -149,7 +149,7 @@ func (p *Plan) RewriteText(results []string) ([]byte, error) {
 // RewriteGroupsText replaces every image with a lightweight numbered marker
 // and appends one joint visual analysis to the originating prompt item. This
 // preserves image order without duplicating a large model result per image.
-func (p *Plan) RewriteGroupsText(results []string) ([]byte, error) {
+func (p *responsesPlan) RewriteGroupsText(results []string) ([]byte, error) {
 	if p == nil {
 		return nil, plannerError(ErrorMalformedRequest, 400, "nil response plan", "body")
 	}

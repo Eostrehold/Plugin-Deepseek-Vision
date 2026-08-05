@@ -13,7 +13,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
-	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/downstream"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/safety"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
@@ -239,7 +239,8 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		return resp, nil
 	}
 	cfg := state.cfg
-	if !eligible(req, cfg) {
+	adapter, eligibleRequest := eligible(req, cfg)
+	if !eligibleRequest {
 		return resp, nil
 	}
 	traceSession = r.safeStartFullTrace(state, req)
@@ -251,7 +252,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	ctx, cancel := context.WithTimeout(baseCtx, cfg.RequestTimeout)
 	defer cancel()
 
-	plan, planErr := responses.Discover(req.Body, responses.Options{
+	plan, planErr := adapter.Discover(req.Body, downstream.Options{
 		MaxImages:         cfg.EmergencyMaxImagesPerRequest,
 		MaxReferenceBytes: cfg.MaxImageReferenceBytes,
 		MaxBodyBytes:      cfg.MaxRequestBytes,
@@ -381,7 +382,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	return pluginapi.RequestInterceptResponse{Headers: req.Headers, Body: rewritten}, nil
 }
 
-func visionInputs(images []responses.Image) []vision.ImageInput {
+func visionInputs(images []downstream.Image) []vision.ImageInput {
 	inputs := make([]vision.ImageInput, 0, len(images))
 	for i := range images {
 		inputs = append(inputs, vision.ImageInput{Number: images[i].Number, Reference: images[i].Reference})
@@ -493,7 +494,7 @@ func (r *Runtime) tracePlannerLimit(ctx context.Context, state *runtimeState, er
 	if r == nil || state == nil || r.diagnostic == nil {
 		return
 	}
-	var planner *responses.Error
+	var planner *downstream.Error
 	if !errors.As(err, &planner) || planner.StatusCode != http.StatusRequestEntityTooLarge {
 		return
 	}
@@ -535,15 +536,19 @@ func HandleUnavailable(req pluginapi.RequestInterceptRequest, targetModels ...st
 	return passthrough(req), nil
 }
 
-func eligible(req pluginapi.RequestInterceptRequest, cfg *config.Config) bool {
-	if cfg == nil || req.SourceFormat != "openai-response" {
-		return false
+func eligible(req pluginapi.RequestInterceptRequest, cfg *config.Config) (downstream.Adapter, bool) {
+	if cfg == nil {
+		return nil, false
 	}
 	path, ok := req.Metadata["request_path"].(string)
-	if !ok || path != "/v1/responses" || req.Model == "" {
-		return false
+	if !ok || req.Model == "" {
+		return nil, false
 	}
-	return targetModelMatches(req.Model, cfg.TargetModels)
+	adapter, ok := downstream.Match(req.SourceFormat, path)
+	if !ok || !targetModelMatches(req.Model, cfg.TargetModels) {
+		return nil, false
+	}
+	return adapter, true
 }
 
 func passthrough(req pluginapi.RequestInterceptRequest) pluginapi.RequestInterceptResponse {
@@ -551,17 +556,21 @@ func passthrough(req pluginapi.RequestInterceptRequest) pluginapi.RequestInterce
 }
 
 func unavailableImageRequest(req pluginapi.RequestInterceptRequest, targetModels []string) bool {
-	if req.SourceFormat != "openai-response" || req.Model == "" || !targetModelMatches(req.Model, targetModels) {
+	if req.Model == "" || !targetModelMatches(req.Model, targetModels) {
 		return false
 	}
 	path, ok := req.Metadata["request_path"].(string)
-	if !ok || path != "/v1/responses" {
+	if !ok {
+		return false
+	}
+	adapter, ok := downstream.Match(req.SourceFormat, path)
+	if !ok {
 		return false
 	}
 	// Discovery is deliberately run even while unavailable: raw marker scans
 	// can be bypassed with JSON escapes or whitespace, while the parser provides
 	// the same fail-closed structural decision used by the normal path.
-	plan, err := responses.Discover(req.Body)
+	plan, err := adapter.Discover(req.Body)
 	return err != nil || plan.HasImages()
 }
 
@@ -578,7 +587,7 @@ func targetModelMatches(model string, targetModels []string) bool {
 }
 
 func terminateForError(err error) pluginapi.RequestInterceptResponse {
-	var planner *responses.Error
+	var planner *downstream.Error
 	if errors.As(err, &planner) {
 		switch planner.StatusCode {
 		case http.StatusBadRequest:
@@ -592,24 +601,24 @@ func terminateForError(err error) pluginapi.RequestInterceptResponse {
 	return terminate(http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
 }
 
-func publicLimitMessage(limit responses.LimitKind, actual, maximum int) string {
+func publicLimitMessage(limit downstream.LimitKind, actual, maximum int) string {
 	switch limit {
-	case responses.LimitRequestBody:
+	case downstream.LimitRequestBody:
 		if actual > 0 && maximum > 0 {
 			return fmt.Sprintf("request body exceeds configured limit: found %d bytes, limit %d", actual, maximum)
 		}
 		return "request body exceeds configured limit"
-	case responses.LimitImageReference:
+	case downstream.LimitImageReference:
 		if actual > 0 && maximum > 0 {
 			return fmt.Sprintf("image reference exceeds configured limit: found %d bytes, limit %d", actual, maximum)
 		}
 		return "image reference exceeds configured limit"
-	case responses.LimitImageCount:
+	case downstream.LimitImageCount:
 		if actual > 0 && maximum > 0 {
 			return fmt.Sprintf("request contains too many unique images: found %d, emergency limit %d", actual, maximum)
 		}
 		return "request contains too many images"
-	case responses.LimitVLMResult:
+	case downstream.LimitVLMResult:
 		if actual > 0 && maximum > 0 {
 			return fmt.Sprintf("vision result exceeds configured limit: found %d characters, limit %d", actual, maximum)
 		}
