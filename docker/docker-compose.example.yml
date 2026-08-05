@@ -30,7 +30,7 @@ services:
     image: deepseek-vision-builder:${VERSION:-0.1.1}
     build:
       context: ..
-      dockerfile: Dockerfile.plugin
+      dockerfile: docker/Dockerfile.plugin
       target: artifact
       args:
         VERSION: ${VERSION:-0.1.1}

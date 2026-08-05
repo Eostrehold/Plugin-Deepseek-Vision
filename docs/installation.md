@@ -101,12 +101,12 @@ library; configuration changes can be applied through lifecycle reconfigure.
 
 ## Docker installation
 
-The root `Dockerfile.plugin` has a scratch artifact stage. BuildKit can export
+`docker/Dockerfile.plugin` has a scratch artifact stage. BuildKit can export
 the library directly into the host plugin tree:
 
 ```bash
 mkdir -p plugins/linux/amd64
-docker build --file Dockerfile.plugin --target artifact \
+docker build --file docker/Dockerfile.plugin --target artifact \
   --build-arg VERSION=0.1.1 \
   --output type=local,dest=./plugins/linux/amd64 .
 ```

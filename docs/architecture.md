@@ -27,7 +27,7 @@ HTTP 客户端。`host.model.execute` 负责模型路由、凭证、供应商协
 
 ## SDK 依赖可复现性
 
-`go.mod` 固定 `github.com/router-for-me/CLIProxyAPI/v7 v7.2.113`，与 CLIProxyAPI v7.2.113 的 SDK/API 版本一致。构建使用该版本模块，不写入绝对路径 `replace`。需要本地联调时，可将 `go.work.example` 复制为未跟踪的 `go.work`，并将工作区中的 SDK checkout 固定在 v7.2.113；`go.work` 和 `go.work.sum` 已被忽略，避免把本地工作区引用带入仓库。若 SDK 版本改变，应同步更新 `require`、`go.sum` 和本文件；完成依赖更新后运行 `GOTOOLCHAIN=auto go mod download` 生成 `go.sum`。
+`go.mod` 固定 `github.com/router-for-me/CLIProxyAPI/v7 v7.2.113`，与 CLIProxyAPI v7.2.113 的 SDK/API 版本一致。构建使用该版本模块，不写入绝对路径 `replace`。需要本地联调时，可将 `docs/examples/go.work.example` 复制到仓库根目录并命名为未跟踪的 `go.work`，再将工作区中的 SDK checkout 固定在 v7.2.113；`go.work` 和 `go.work.sum` 已被忽略，避免把本地工作区引用带入仓库。若 SDK 版本改变，应同步更新 `require`、`go.sum` 和本文件；完成依赖更新后运行 `GOTOOLCHAIN=auto go mod download` 生成 `go.sum`。
 
 ## 资源与安全边界
 
