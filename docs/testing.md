@@ -11,10 +11,11 @@ go vet ./...
 ```
 
 The package smoke test builds with CGO, verifies `cliproxy_plugin_init`, checks
-the external archive SHA-256, requires the ZIP root to contain only
-`deepseek-vision.so`, and scans the archive for obvious credential material. It
-uses a temporary directory and removes it on exit. The regular package command
-writes only to the ignored `dist/` directory.
+the external archive SHA-256, requires the ZIP root to contain only the native
+`deepseek-vision.so`, `.dylib`, or `.dll`, and scans the archive for obvious
+credential material. CI runs it natively on Linux, macOS, and Windows for both
+amd64 and arm64. It uses a temporary directory and removes it on exit. The
+regular package command writes only to the ignored `dist/` directory.
 
 For Docker validation, first check the rendered configuration without starting
 services:

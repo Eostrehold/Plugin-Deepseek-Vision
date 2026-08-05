@@ -3,9 +3,11 @@
 ## Native installation
 
 The plugin host selects dynamic libraries from
-`<plugin-root>/<GOOS>/<GOARCH>`. For Linux amd64 there are two supported
-installation modes. Choose one mode per plugin ID; do not mix an unversioned
-file with versioned candidates.
+`<plugin-root>/<GOOS>/<GOARCH>`. v0.1.1 publishes native packages for
+Linux, macOS, and Windows on amd64/arm64. Linux uses `.so`, macOS uses
+`.dylib`, and Windows uses `.dll`. Choose one installation mode per plugin ID;
+do not mix an unversioned file with versioned candidates. The examples below
+use Linux amd64.
 
 ### Manual mode (one unversioned file)
 
@@ -15,7 +17,7 @@ Manual mode is intentionally unambiguous: the directory contains exactly one
 ```bash
 VERSION=0.1.1 ./scripts/package.sh
 ./scripts/checksum.sh
-(cd dist && sha256sum -c checksums.txt)
+(cd dist && grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -)
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
 # Remove stale candidates for this plugin ID before installing the new file.
@@ -65,7 +67,7 @@ payload while installing it:
 ```bash
 plugin_dir=plugins/linux/amd64
 tmp_dir=$(mktemp -d)
-(cd dist && sha256sum -c checksums.txt)
+(cd dist && grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -)
 unzip -q dist/deepseek-vision_0.1.1_linux_amd64.zip -d "$tmp_dir"
 rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir"/deepseek-vision-v*.so
 install -m 0755 "$tmp_dir/deepseek-vision.so" "$plugin_dir/deepseek-vision-v0.1.1.so"

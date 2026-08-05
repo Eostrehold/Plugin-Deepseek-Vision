@@ -3,7 +3,9 @@
 ## Plugin is not discovered
 
 Check the file name and platform directory. Manual mode must contain exactly
-one unversioned candidate:
+one unversioned candidate. CLIProxyAPI uses `<GOOS>/<GOARCH>` directories and
+the platform extension (`.so` on Linux, `.dylib` on macOS, `.dll` on Windows).
+The commands below are a Linux amd64 example:
 
 ```text
 <CLI_PROXY_PLUGIN_PATH>/linux/amd64/deepseek-vision.so
@@ -105,7 +107,8 @@ eligible Responses image requests, plugin failures are terminal (typically
 `docker build` requires a running daemon and access to the Go base image/module
 proxy. Use `docker compose ... config` first to catch invalid paths or YAML.
 Create the host directories referenced by the compose file and verify that the
-plugin is under `plugins/linux/amd64`, not directly under `plugins/`.
+plugin is under `plugins/linux/amd64`, not directly under `plugins/`; this path
+is specific to the Linux amd64 container shown in the Compose example.
 
 ## Slow or rejected requests
 

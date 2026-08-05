@@ -11,7 +11,7 @@
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.113-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
-[![Platform](https://img.shields.io/badge/platform-Linux%20amd64-FCC624?logo=linux&logoColor=black)](docs/limitations.md)
+[![Platforms](https://img.shields.io/badge/platforms-6-4C8BF5)](docs/limitations.md)
 [![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
 **简体中文** · [English](README_EN.md) · [安装](docs/installation.md) · [配置](docs/configuration.md) · [排障](docs/troubleshooting.md)
@@ -102,11 +102,14 @@ final Model ∈ target_models
 
 ### 1. 安装 v0.1.1
 
+Release 为 CLIProxyAPI 的 6 个原生宿主组合提供资产：Linux、macOS、Windows 的 amd64 与 arm64。
+以下是 Linux amd64 手动安装示例。
+
 从 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载
 `deepseek-vision_0.1.1_linux_amd64.zip` 与外部 `checksums.txt`，校验 ZIP 后把其中唯一的动态库安装到插件目录：
 
 ```bash
-sha256sum -c checksums.txt
+grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -
 
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
@@ -205,14 +208,16 @@ request bundle 包含完整原始 body、图片 URL / data URI、发现位置、
 
 ## 构建与发布
 
-Linux amd64 源码构建需要 Go 1.26、CGO、C 编译器、`python3`、`nm`、`strings` 和 `sha256sum`：
+原生构建需要 Go 1.26、CGO、平台 C 编译器、Python、Git，以及 `nm`（Linux/macOS）或
+`objdump`（Windows）。脚本默认构建当前宿主的 GOOS/GOARCH：
 
 ```bash
 VERSION=0.1.1 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-产物是可复现的 `dist/deepseek-vision_0.1.1_linux_amd64.zip` 和 `dist/checksums.txt`。每个 PR 都会运行：
+产物是可复现的 `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
+每个 PR 除常规检查外，还会在 6 个原生 GitHub runner 上构建并验证发布包：
 
 ```bash
 go test ./...
@@ -222,12 +227,13 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-推送 `v0.1.1` tag 后，Release workflow 会再次执行测试、构建和校验，并发布 ZIP 与 checksum。CI 和发布包
+推送 `v0.1.1` tag 后，Release workflow 会聚合 6 个 ZIP 与一份 checksum。CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制
 
-- 官方产物仅提供 Linux amd64；其他平台需要本机构建与匹配的 CLIProxyAPI 宿主。
+- v0.1.1 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
+  但本版本尚未发布未经 FreeBSD 实机验收的资产。
 - 插件仅改写 OpenAI Responses `/v1/responses`，不实现其他协议的图片转换。
 - 预处理必须在响应流开始前完成，因此 VLM 延迟会增加首字节时间。
 - 缓存为进程内缓存，不会在多个 CLIProxyAPI 实例间共享。

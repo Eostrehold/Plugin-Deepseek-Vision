@@ -11,7 +11,7 @@ through the host, turns all images in one prompt into a joint visual analysis, a
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.113-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
-[![Platform](https://img.shields.io/badge/platform-Linux%20amd64-FCC624?logo=linux&logoColor=black)](docs/limitations.md)
+[![Platforms](https://img.shields.io/badge/platforms-6-4C8BF5)](docs/limitations.md)
 [![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
 [简体中文](README.md) · **English** · [Installation](docs/installation.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md)
@@ -106,12 +106,15 @@ final Model in target_models
 
 ### 1. Install v0.1.1
 
+The release provides six native CLIProxyAPI host combinations: amd64 and arm64 for Linux, macOS, and Windows.
+The command below is the Linux amd64 manual-install example.
+
 Download `deepseek-vision_0.1.1_linux_amd64.zip` and the external `checksums.txt` from
 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases), verify the ZIP, and install its only
 dynamic library in the manual plugin directory:
 
 ```bash
-sha256sum -c checksums.txt
+grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -
 
 plugin_dir=plugins/linux/amd64
 mkdir -p "$plugin_dir"
@@ -216,14 +219,16 @@ the retained files. Docker deployments must mount `/CLIProxyAPI/logs` to the hos
 
 ## Build and release
 
-Linux amd64 source builds require Go 1.26, CGO, a C compiler, `python3`, `nm`, `strings`, and `sha256sum`:
+Native builds require Go 1.26, CGO, a platform C compiler, Python, Git, and either `nm` (Linux/macOS) or
+`objdump` (Windows). The script targets the current host GOOS/GOARCH by default:
 
 ```bash
 VERSION=0.1.1 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-This produces reproducible `dist/deepseek-vision_0.1.1_linux_amd64.zip` and `dist/checksums.txt`. Every PR runs:
+This produces reproducible `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
+the normal checks, every PR builds and verifies packages on six native GitHub runners:
 
 ```bash
 go test ./...
@@ -233,12 +238,13 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Pushing tag `v0.1.1` makes the Release workflow repeat validation and publish the ZIP and checksum. CI and release
+Pushing tag `v0.1.1` makes the Release workflow aggregate six ZIPs and one checksum file. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations
 
-- Official artifacts currently target Linux amd64; other platforms require a native build and matching host.
+- v0.1.1 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
+  plugins, but this release does not publish an asset that has not passed native FreeBSD acceptance.
 - Only OpenAI Responses `/v1/responses` is rewritten; no other source protocol receives image conversion.
 - VLM preprocessing completes before streaming, so it adds time to first byte.
 - The cache is process-local and is not shared across CLIProxyAPI instances.

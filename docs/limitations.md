@@ -5,9 +5,11 @@
   final model must be in `target_models`. Anthropic Messages and Chat
   Completions are not implemented; image-bearing requests in those protocols
   receive no plugin conversion or image-removal guarantee.
-- Release artifacts currently target Linux amd64. Other platforms require a
-  native CGO build and matching CLIProxyAPI host; do not copy a Linux `.so` to
-  macOS or Windows.
+- Release artifacts target Linux, macOS, and Windows on amd64/arm64. Each asset
+  is a native CGO build and must match the CLIProxyAPI host platform; do not
+  copy `.so`, `.dylib`, or `.dll` files between platforms. CLIProxyAPI also
+  supports FreeBSD amd64 dynamic plugins, but v0.1.1 does not publish that
+  asset until it has passed native FreeBSD acceptance.
 - The plugin calls CLIProxyAPI `host.model.execute` using the OpenAI Responses
   protocol. Provider-specific protocols and transports are host concerns;
   image `file_id` inputs are not supported by the plugin rewrite contract.

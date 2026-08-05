@@ -14,7 +14,28 @@ permissions:
   contents: write
 
 jobs:
-  release:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ inputs.version }}
+        run: |
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            version="$RELEASE_INPUT"
+          else
+            version="${GITHUB_REF_NAME#v}"
+          fi
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+  checks:
+    name: Release checks
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
@@ -22,34 +43,111 @@ jobs:
         with:
           go-version: "1.26.x"
           cache: true
-      - name: Resolve release version
-        id: version
-        shell: bash
-        run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            version="${{ inputs.version }}"
-          else
-            version="${GITHUB_REF_NAME#v}"
-          fi
-          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
-          echo "version=$version" >> "$GITHUB_OUTPUT"
       - name: Test and verify contracts
         run: |
           go test ./...
           go test -race ./...
           go vet ./...
           ./scripts/verify-contracts.sh
-      - name: Build and checksum release assets
+
+  package:
+    name: Package ${{ matrix.goos }}/${{ matrix.goarch }}
+    needs: [version, checks]
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: linux-amd64
+            runner: ubuntu-latest
+            goos: linux
+            goarch: amd64
+          - target: linux-arm64
+            runner: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+          - target: darwin-amd64
+            runner: macos-15-intel
+            goos: darwin
+            goarch: amd64
+          - target: darwin-arm64
+            runner: macos-15
+            goos: darwin
+            goarch: arm64
+          - target: windows-amd64
+            runner: windows-latest
+            goos: windows
+            goarch: amd64
+          - target: windows-arm64
+            runner: windows-11-arm
+            goos: windows
+            goarch: arm64
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        if: matrix.goos != 'linux'
+        with:
+          go-version: "1.26.4"
+          cache: true
+      - uses: actions/setup-python@v5
+        if: matrix.goos != 'linux'
+        with:
+          python-version: "3.x"
+      - name: Verify native runner
+        if: matrix.goos != 'linux'
+        shell: bash
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
         run: |
-          ./scripts/package.sh
-          ./scripts/checksum.sh
+          test "$(go env GOOS)" = "$TARGET_GOOS"
+          test "$(go env GOARCH)" = "$TARGET_GOARCH"
+      - name: Build and verify release asset
+        shell: bash
+        env:
+          GO_VERSION: "1.26.4"
+          VERSION: ${{ needs.version.outputs.value }}
+          TARGET_GOOS: ${{ matrix.goos }}
+          TARGET_GOARCH: ${{ matrix.goarch }}
+          DIST_DIR: dist
+        run: ./scripts/ci-package.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/deepseek-vision_${{ needs.version.outputs.value }}_${{ matrix.goos }}_${{ matrix.goarch }}.zip
+          if-no-files-found: error
+
+  publish:
+    name: Publish release assets
+    needs: [version, package]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Generate aggregate checksums
+        env:
+          DIST_DIR: dist
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+
+          dist = Path(os.environ["DIST_DIR"])
+          archives = sorted(dist.glob("deepseek-vision_*.zip"))
+          if not archives:
+              raise SystemExit("no release archives found")
+          lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in archives]
+          (dist / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="ascii")
+          PY
       - name: Publish GitHub release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ steps.version.outputs.version }}
+          tag_name: v${{ needs.version.outputs.value }}
           generate_release_notes: true
           files: |
-            dist/deepseek-vision_${{ steps.version.outputs.version }}_linux_amd64.zip
+            dist/deepseek-vision_*.zip
             dist/checksums.txt
