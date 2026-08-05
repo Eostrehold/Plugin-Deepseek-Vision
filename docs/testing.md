@@ -13,9 +13,11 @@ go vet ./...
 The package smoke test builds with CGO, verifies `cliproxy_plugin_init`, checks
 the external archive SHA-256, requires the ZIP root to contain only the native
 `deepseek-vision.so`, `.dylib`, or `.dll`, and scans the archive for obvious
-credential material. CI runs it natively on Linux, macOS, and Windows for both
-amd64 and arm64. It uses a temporary directory and removes it on exit. The
-regular package command writes only to the ignored `dist/` directory.
+credential material. Ordinary CI runs the Linux amd64 package in the same
+manylinux2014 environment used by CLIProxyAPI. The Release workflow performs
+the native Linux, macOS, and Windows amd64/arm64 matrix. Smoke tests use a
+temporary directory and remove it on exit; the regular package command writes
+only to the ignored `dist/` directory.
 The Windows arm64 job installs a pinned, SHA-256-verified LLVM-MinGW toolchain
 because the hosted runner's default `gcc` targets x86-64.
 

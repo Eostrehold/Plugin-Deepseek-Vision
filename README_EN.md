@@ -228,7 +228,7 @@ VERSION=0.1.1 ./scripts/package.sh
 ```
 
 This produces reproducible `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
-the normal checks, every PR builds and verifies packages on six native GitHub runners:
+the normal checks, regular pushes and PRs build only the Linux amd64 compatibility package:
 
 ```bash
 go test ./...
@@ -238,7 +238,8 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Pushing tag `v0.1.1` makes the Release workflow aggregate six ZIPs and one checksum file. CI and release
+Pushing tag `v0.1.1` makes the Release workflow perform the full six-runner build and aggregate six ZIPs and one
+checksum file. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations

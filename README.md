@@ -217,7 +217,7 @@ VERSION=0.1.1 ./scripts/package.sh
 ```
 
 产物是可复现的 `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
-每个 PR 除常规检查外，还会在 6 个原生 GitHub runner 上构建并验证发布包：
+普通提交和 PR 除常规检查外，只构建 Linux amd64 兼容包：
 
 ```bash
 go test ./...
@@ -227,7 +227,8 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-推送 `v0.1.1` tag 后，Release workflow 会聚合 6 个 ZIP 与一份 checksum。CI 和发布包
+推送 `v0.1.1` tag 后，Release workflow 才会在 6 个原生 runner 上全量构建，并聚合 6 个 ZIP 与一份
+checksum。CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制

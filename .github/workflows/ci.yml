@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-    tags: ["v*.*.*"]
   pull_request:
 
 permissions:
@@ -29,72 +28,22 @@ jobs:
         run: ./scripts/verify-contracts.sh
 
   package:
-    name: Package ${{ matrix.goos }}/${{ matrix.goarch }}
+    name: Linux amd64 package
     needs: checks
-    runs-on: ${{ matrix.runner }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: linux-amd64
-            runner: ubuntu-latest
-            goos: linux
-            goarch: amd64
-          - target: linux-arm64
-            runner: ubuntu-24.04-arm
-            goos: linux
-            goarch: arm64
-          - target: darwin-amd64
-            runner: macos-15-intel
-            goos: darwin
-            goarch: amd64
-          - target: darwin-arm64
-            runner: macos-15
-            goos: darwin
-            goarch: arm64
-          - target: windows-amd64
-            runner: windows-latest
-            goos: windows
-            goarch: amd64
-          - target: windows-arm64
-            runner: windows-11-arm
-            goos: windows
-            goarch: arm64
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
-        if: matrix.goos != 'linux'
-        with:
-          go-version: "1.26.4"
-          cache: true
-      - uses: actions/setup-python@v5
-        if: matrix.goos != 'linux'
-        with:
-          python-version: "3.x"
-      - name: Install Windows ARM64 CGO toolchain
-        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
-        shell: pwsh
-        run: ./scripts/setup-windows-arm64-cgo.ps1
-      - name: Verify native runner
-        if: matrix.goos != 'linux'
-        shell: bash
-        env:
-          TARGET_GOOS: ${{ matrix.goos }}
-          TARGET_GOARCH: ${{ matrix.goarch }}
-        run: |
-          test "$(go env GOOS)" = "$TARGET_GOOS"
-          test "$(go env GOARCH)" = "$TARGET_GOARCH"
       - name: Build and verify package
         shell: bash
         env:
           GO_VERSION: "1.26.4"
-          TARGET_GOOS: ${{ matrix.goos }}
-          TARGET_GOARCH: ${{ matrix.goarch }}
+          TARGET_GOOS: linux
+          TARGET_GOARCH: amd64
           DIST_DIR: dist
         run: ./scripts/ci-package.sh
       - name: Upload package smoke artifact
         uses: actions/upload-artifact@v4
         with:
-          name: deepseek-vision-${{ matrix.target }}
+          name: deepseek-vision-linux-amd64
           path: dist/*
           if-no-files-found: error
