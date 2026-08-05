@@ -238,8 +238,9 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Pushing tag `v0.1.1` makes the Release workflow perform the full six-runner build and aggregate six ZIPs and one
-checksum file. CI and release
+Manually run the Release workflow in GitHub Actions with version `0.1.1` to perform the full six-runner build,
+aggregate six ZIPs and one checksum file, and attach them to a Draft Release. A maintainer publishes it only after
+inspection. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations

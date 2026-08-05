@@ -227,8 +227,9 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-推送 `v0.1.1` tag 后，Release workflow 才会在 6 个原生 runner 上全量构建，并聚合 6 个 ZIP 与一份
-checksum。CI 和发布包
+在 GitHub Actions 中手动运行 Release workflow 并输入 `0.1.1` 后，它才会在 6 个原生 runner 上全量
+构建，聚合 6 个 ZIP 与一份 checksum，并把资产写入 Draft Release；检查无误后再由维护者手动发布。
+CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制

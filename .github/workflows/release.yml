@@ -1,8 +1,6 @@
 name: Release
 
 on:
-  push:
-    tags: ["v*.*.*"]
   workflow_dispatch:
     inputs:
       version:
@@ -26,11 +24,7 @@ jobs:
         env:
           RELEASE_INPUT: ${{ inputs.version }}
         run: |
-          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
-            version="$RELEASE_INPUT"
-          else
-            version="${GITHUB_REF_NAME#v}"
-          fi
+          version="$RELEASE_INPUT"
           [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]
           echo "value=$version" >> "$GITHUB_OUTPUT"
 
@@ -122,7 +116,7 @@ jobs:
           if-no-files-found: error
 
   publish:
-    name: Publish release assets
+    name: Update draft release
     needs: [version, package]
     runs-on: ubuntu-24.04
     steps:
@@ -147,11 +141,12 @@ jobs:
           lines = [f"{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}" for path in archives]
           (dist / "checksums.txt").write_text("\n".join(lines) + "\n", encoding="ascii")
           PY
-      - name: Publish GitHub release
+      - name: Upload assets to draft release
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v${{ needs.version.outputs.value }}
-          generate_release_notes: true
+          target_commitish: ${{ github.sha }}
+          draft: true
           files: |
             dist/deepseek-vision_*.zip
             dist/checksums.txt
