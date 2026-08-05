@@ -100,69 +100,45 @@ final Model ∈ target_models
 
 ## 快速开始
 
-### 1. 安装 v0.1.1
+当前插件尚未收录到 CLIProxyAPI 官方插件源，需要先从
+[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载与 CLIProxyAPI 运行平台匹配的
+v0.1.1 ZIP；解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见
+[安装文档](docs/installation.md)。
 
-Release 为 CLIProxyAPI 的 6 个原生宿主组合提供资产：Linux、macOS、Windows 的 amd64 与 arm64。
-以下是 Linux amd64 手动安装示例。
+### Docker 部署
 
-从 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载
-`deepseek-vision_0.1.1_linux_amd64.zip` 与外部 `checksums.txt`，校验 ZIP 后把其中唯一的动态库安装到插件目录：
-
-```bash
-grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -
-
-plugin_dir=plugins/linux/amd64
-mkdir -p "$plugin_dir"
-find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
-rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
-unzip -o deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
-```
-
-手动模式下活动文件必须是 `plugins/linux/amd64/deepseek-vision.so`，不要同时保留旧的版本化 `.so`。
-Store 模式、Docker、升级和回滚步骤见 [安装文档](docs/installation.md)。替换动态库后需要重启 CLIProxyAPI。
-
-### 2. 配置
-
-先确保 CLIProxyAPI 中已经存在一个支持图片的模型；默认使用 `gpt-5.6-luna`。然后合并：
+把宿主机插件目录映射到容器内 `/CLIProxyAPI/plugins`：
 
 ```yaml
-plugins:
-  enabled: true
-  configs:
-    deepseek-vision:
-      enabled: true
-      priority: 100
-      target_models:
-        - deepseek-v4-flash
-
-      vision_model: gpt-5.6-luna
-      language: zh
-      max_inflight_vision_requests: 4
-      emergency_max_images_per_request: 256
-      request_timeout_seconds: 120
-
-      analysis_cache_size: 128
-      analysis_cache_ttl_seconds: 900
-      analysis_url_cache_ttl_seconds: 120
-      trace_enabled: false
+volumes:
+  - /path/to/plugins:/CLIProxyAPI/plugins
 ```
 
-CPAMC 配置界面会把常用字段展示为枚举、整数或布尔配置；中英文说明会给出默认值，并为关键整数项标明范围。高级请求体、
-图片引用、响应体和结果长度限制仍可通过 YAML 调整。完整字段见 [`config.example.yaml`](config.example.yaml)
-和 [配置参考](docs/configuration.md)。
+CLIProxyAPI 在容器中运行，因此应按**容器**架构下载 Linux 资产，而不是按宿主桌面系统选择。Linux amd64
+容器应把 ZIP 中的文件放到宿主机：
 
-### 3. 确认加载状态
-
-```bash
-curl -fsS \
-  -H 'Authorization: Bearer <management-key>' \
-  http://127.0.0.1:<management-port>/v0/management/plugins \
-  | jq '.plugins[]
-      | select(.id == "deepseek-vision")
-      | {path, registered, effective_enabled, metadata}'
+```text
+/path/to/plugins/linux/amd64/deepseek-vision.so
 ```
 
-确认 `registered`、`effective_enabled` 均为 `true`，活动路径唯一，且 `metadata.version` 为 `0.1.1`。
+Linux arm64 容器把 `amd64` 换成 `arm64`。完成后重启 CLIProxyAPI 容器。
+
+### 直接部署
+
+CLIProxyAPI 默认从启动工作目录下的 `plugins` 读取插件。把动态库放入：
+
+```text
+plugins/<GOOS>/<GOARCH>/deepseek-vision.<ext>
+```
+
+例如 Linux amd64 使用 `plugins/linux/amd64/deepseek-vision.so`，macOS 使用 `.dylib`，Windows 使用
+`.dll`。如果配置了 `plugins.dir`，则用该目录替代默认的 `plugins`。安装后重启 CLIProxyAPI。
+
+### 在 Management HTML 中启用
+
+打开 `http://<CLIProxyAPI地址>:<端口>/management.html`，进入插件页面，启用 `deepseek-vision`，只需把
+`vision_model` 选择为 CLIProxyAPI 中已经可用的任意视觉模型并保存。默认目标模型已经是
+`deepseek-v4-flash`，其他字段首次使用时保持默认值即可；页面显示插件已加载后便可开始使用。
 
 ## 配置重点
 
@@ -178,6 +154,22 @@ curl -fsS \
 | `analysis_cache_ttl_seconds` | `900` | data URI 分析缓存秒数 |
 | `analysis_url_cache_ttl_seconds` | `120` | URL 图片分析缓存秒数 |
 | `trace_enabled` | `false` | 完整明文调试 trace，仅临时启用 |
+
+### 可选：手动写入配置
+
+不使用 Management HTML 时，最小 YAML 配置只需要启用插件并指定宿主中已有的视觉模型：
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    deepseek-vision:
+      enabled: true
+      vision_model: gpt-5.6-luna
+```
+
+完整字段、默认值和高级限制见 [`config.example.yaml`](config.example.yaml) 与
+[配置参考](docs/configuration.md)。
 
 缓存键由有序图片引用、完整 prompt、视觉模型和规范化语言组成；缓存只保存不可逆哈希键与派生分析文本，
 不保存原图或图片引用。重配置或重启会创建新的缓存代际。

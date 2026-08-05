@@ -104,73 +104,46 @@ final Model in target_models
 
 ## Quick start
 
-### 1. Install v0.1.1
+The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.1.1 ZIP matching the
+platform where CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases);
+it contains one dynamic library. See the [installation guide](docs/installation.md) for checksum verification,
+other platforms, and upgrades.
 
-The release provides six native CLIProxyAPI host combinations: amd64 and arm64 for Linux, macOS, and Windows.
-The command below is the Linux amd64 manual-install example.
+### Docker deployment
 
-Download `deepseek-vision_0.1.1_linux_amd64.zip` and the external `checksums.txt` from
-[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases), verify the ZIP, and install its only
-dynamic library in the manual plugin directory:
-
-```bash
-grep '  deepseek-vision_0.1.1_linux_amd64.zip$' checksums.txt | sha256sum -c -
-
-plugin_dir=plugins/linux/amd64
-mkdir -p "$plugin_dir"
-find "$plugin_dir" -maxdepth 1 -type f -name 'deepseek-vision-v*.so' -delete
-rm -f "$plugin_dir/deepseek-vision.so" "$plugin_dir/checksums.txt"
-unzip -o deepseek-vision_0.1.1_linux_amd64.zip -d "$plugin_dir"
-```
-
-Manual mode requires `plugins/linux/amd64/deepseek-vision.so` with no stale versioned `.so` beside it. See the
-[installation guide](docs/installation.md) for Store mode, Docker, upgrades, and rollback. Restart CLIProxyAPI after
-replacing the library.
-
-### 2. Configure
-
-First configure a vision-capable model in CLIProxyAPI. The plugin defaults to `gpt-5.6-luna`:
+Mount a host plugin directory at `/CLIProxyAPI/plugins`:
 
 ```yaml
-plugins:
-  enabled: true
-  configs:
-    deepseek-vision:
-      enabled: true
-      priority: 100
-      target_models:
-        - deepseek-v4-flash
-
-      vision_model: gpt-5.6-luna
-      language: en
-      max_inflight_vision_requests: 4
-      emergency_max_images_per_request: 256
-      request_timeout_seconds: 120
-
-      analysis_cache_size: 128
-      analysis_cache_ttl_seconds: 900
-      analysis_url_cache_ttl_seconds: 120
-      trace_enabled: false
+volumes:
+  - /path/to/plugins:/CLIProxyAPI/plugins
 ```
 
-The CPAMC form exposes common values as enum, integer, and boolean fields. Bilingual descriptions state defaults and
-give ranges for key integer controls. Advanced
-body, image-reference, response, and output limits remain available in YAML. See
-[`config.example.yaml`](config.example.yaml) and the [configuration reference](docs/configuration.md).
+CLIProxyAPI runs inside the container, so choose a Linux asset for the **container** architecture rather than the
+desktop host OS. For a Linux amd64 container, place the extracted file at:
 
-### 3. Verify registration
-
-```bash
-curl -fsS \
-  -H 'Authorization: Bearer <management-key>' \
-  http://127.0.0.1:<management-port>/v0/management/plugins \
-  | jq '.plugins[]
-      | select(.id == "deepseek-vision")
-      | {path, registered, effective_enabled, metadata}'
+```text
+/path/to/plugins/linux/amd64/deepseek-vision.so
 ```
 
-`registered` and `effective_enabled` should both be `true`, the active path should be unique, and
-`metadata.version` should be `0.1.1`.
+Use `arm64` instead of `amd64` for a Linux arm64 container, then restart CLIProxyAPI.
+
+### Direct deployment
+
+By default, CLIProxyAPI reads plugins from `plugins` under its process working directory. Install the library at:
+
+```text
+plugins/<GOOS>/<GOARCH>/deepseek-vision.<ext>
+```
+
+For example, Linux amd64 uses `plugins/linux/amd64/deepseek-vision.so`; macOS uses `.dylib` and Windows uses `.dll`.
+If `plugins.dir` is configured, use that directory instead of `plugins`. Restart CLIProxyAPI after installation.
+
+### Enable it in Management HTML
+
+Open `http://<CLIProxyAPI-host>:<port>/management.html`, go to Plugins, enable `deepseek-vision`, and select any
+vision-capable model already available in CLIProxyAPI as `vision_model`. The default target is already
+`deepseek-v4-flash`; leave the remaining fields at their defaults for the first run. Once the page shows the plugin
+as loaded, it is ready to use.
 
 ## Important configuration
 
@@ -186,6 +159,22 @@ curl -fsS \
 | `analysis_cache_ttl_seconds` | `900` | Data-URI analysis TTL in seconds |
 | `analysis_url_cache_ttl_seconds` | `120` | URL-image analysis TTL in seconds |
 | `trace_enabled` | `false` | Full plaintext diagnostic trace; enable temporarily |
+
+### Optional manual configuration
+
+Without Management HTML, the minimal YAML only enables the plugin and names an existing host vision model:
+
+```yaml
+plugins:
+  enabled: true
+  configs:
+    deepseek-vision:
+      enabled: true
+      vision_model: gpt-5.6-luna
+```
+
+See [`config.example.yaml`](config.example.yaml) and the [configuration reference](docs/configuration.md) for all
+fields, defaults, and advanced limits.
 
 Cache keys include ordered image references, the complete prompt, vision model, and normalized language. Entries store
 only an irreversible hash key and derived text, not source images or references. Reconfigure/restart begins a new cache
