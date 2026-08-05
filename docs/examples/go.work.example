@@ -1,6 +1,6 @@
 go 1.26.0
 
-// Development-only workspace. The sibling checkout must be CLIProxyAPI v7.2.113.
+// Development-only workspace. The sibling checkout must be CLIProxyAPI v7.2.119.
 use (
 	.
 	../CLIProxyAPI

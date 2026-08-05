@@ -78,17 +78,17 @@ metadata.
 
 ## Requests pass through unexpectedly
 
-The plugin intentionally handles only `/v1/responses`, source format
-`openai-response`, and final models listed in `target_models`. An alias is
+The plugin handles the exact `/v1/responses` (`openai-response`),
+`/v1/chat/completions` (`openai`), and `/v1/messages` (`claude`) route pairs for
+final models listed in `target_models`. An alias is
 checked after host resolution; `RequestedModel` alone is not sufficient.
-`/v1/responses/compact`, non-Responses APIs, non-target models and requests
-without images are expected pass-through cases. Anthropic Messages and Chat
-Completions are outside the plugin contract and are not converted. If a request
+`/v1/responses/compact`, `/v1/messages/count_tokens`, other APIs, non-target
+models and requests without images are expected pass-through cases. If a request
 uses `previous_response_id`, remember that server-side history remains hidden
 from this callback; only images present in the current visible `input[]` can be
 rewritten.
 
-For v0.1.1, use `deepseek-v4-flash` when checking a real upstream. The
+For v0.2.0, use `deepseek-v4-flash` when checking a real upstream. The
 `deepseek-v4-pro` entry is future-supported configuration only; it is not a
 required or probed service in this release.
 
@@ -99,7 +99,7 @@ OpenAI Responses. Provider errors, malformed VLM JSON, response-size limits and
 exhausted host retries are intentional failures.
 The error returned to the client is redacted; inspect only service-side status
 metrics, never enable logging of request bodies or Authorization headers. For
-eligible Responses image requests, plugin failures are terminal (typically
+eligible image requests in any supported downstream protocol, plugin failures are terminal (typically
 502); the plugin does not fall back to forwarding the original image.
 
 ## Docker issues

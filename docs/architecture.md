@@ -7,7 +7,8 @@ CLIProxyAPI request
   -> host alias/model resolution
   -> request.intercept_after (plugin)
      -> gate SourceFormat/path/final Model
-     -> group input_image blocks by prompt content/output item
+     -> select the Responses, Chat, or Claude downstream adapter
+     -> group protocol-native image blocks by message/tool-result item
      -> one multi-image host.model.execute call per uncached prompt group
      -> replace image positions with markers and append one joint analysis
   -> DeepSeek executor (only after all replacements succeed)
@@ -21,13 +22,13 @@ HTTP 客户端。`host.model.execute` 负责模型路由、凭证、供应商协
 
 - 契约、fixture、配置示例、文档和验证脚本：定义对外接口和验证入口。
 - ABI、配置与插件生命周期：`main.go`、`rpc.go`、`version.go`、配置实现。
-- Responses 请求/响应处理：`internal/responses/**`。
+- 下游 Responses、Chat、Claude 请求发现与原协议改写：`internal/downstream/**`。
 - 宿主模型适配与安全限制：`internal/vision/**`、`internal/safety/**`。
 - 拦截集成：`internal/interceptor/**` 和集成脚本。
 
 ## SDK 依赖可复现性
 
-`go.mod` 固定 `github.com/router-for-me/CLIProxyAPI/v7 v7.2.113`，与 CLIProxyAPI v7.2.113 的 SDK/API 版本一致。构建使用该版本模块，不写入绝对路径 `replace`。需要本地联调时，可将 `docs/examples/go.work.example` 复制到仓库根目录并命名为未跟踪的 `go.work`，再将工作区中的 SDK checkout 固定在 v7.2.113；`go.work` 和 `go.work.sum` 已被忽略，避免把本地工作区引用带入仓库。若 SDK 版本改变，应同步更新 `require`、`go.sum` 和本文件；完成依赖更新后运行 `GOTOOLCHAIN=auto go mod download` 生成 `go.sum`。
+`go.mod` 固定 `github.com/router-for-me/CLIProxyAPI/v7 v7.2.119`，与 CLIProxyAPI v7.2.119 的 SDK/API 版本一致。构建使用该版本模块，不写入绝对路径 `replace`。需要本地联调时，可将 `docs/examples/go.work.example` 复制到仓库根目录并命名为未跟踪的 `go.work`，再将工作区中的 SDK checkout 固定在 v7.2.119；`go.work` 和 `go.work.sum` 已被忽略，避免把本地工作区引用带入仓库。若 SDK 版本改变，应同步更新 `require`、`go.sum` 和本文件；完成依赖更新后运行 `GOTOOLCHAIN=auto go mod download` 生成 `go.sum`。
 
 ## 资源与安全边界
 

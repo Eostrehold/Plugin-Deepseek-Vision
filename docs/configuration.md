@@ -14,7 +14,7 @@ an invalid update leaves the previous snapshot active.
 | `request_timeout_seconds` | Total preprocessing deadline | 120 |
 | `max_inflight_vision_requests` | Global in-flight prompt-group VLM calls; excess work queues | 4 |
 | `emergency_max_images_per_request` | Last-resort unique-image ceiling | 256 |
-| `max_request_bytes` | Raw Responses body limit | 20 MiB |
+| `max_request_bytes` | Raw supported-protocol request body limit | 20 MiB |
 | `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
 | `max_response_bytes` | VLM response limit | 4 MiB |
 | `max_result_chars` | Extracted result limit | 20,000 |
@@ -86,7 +86,7 @@ not part of the validated release surface. Add it explicitly to
 `target_models` only after verifying that upstream path in your deployment.
 
 The VLM prompt is not a generic caption request. All images attached to one
-Responses content/output item are sent together in order. Luna is asked to
+supported message/content/tool-result item are sent together in order. Luna is asked to
 label the images, faithfully transcribe text, and describe both individual
 content and cross-image relationships. Image text is declared untrusted and
 must never be followed as an instruction. The configured language applies to
@@ -102,16 +102,17 @@ cannot silently restore the former four-block rejection behavior.
 
 ## Gate and pass-through rules
 
-The handler requires all of:
+The handler requires an exact supported route and the final-model gate:
 
 ```text
-SourceFormat == "openai-response"
-metadata.request_path == "/v1/responses"
+openai-response + /v1/responses
+openai          + /v1/chat/completions
+claude          + /v1/messages
 final Model in target_models
 ```
 
 The compact path, unknown image references and unsupported request shapes do not
 silently pass an image through: unsupported images terminate with a client
 error, while a VLM failure terminates with HTTP 502. A successful rewrite is
-idempotent, removes every discovered `input_image` block and reference from its
-original structured position, and verifies that no image block remains.
+idempotent, removes every discovered protocol-native image block and reference
+from its original structured position, and verifies that no image block remains.
