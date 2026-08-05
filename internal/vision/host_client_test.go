@@ -51,6 +51,15 @@ func TestHostClientUsesResponsesProtocolWithoutCredentials(t *testing.T) {
 	if payload.Model != "vision-model" || len(payload.Input) != 1 || len(payload.Input[0].Content) != 3 {
 		t.Fatalf("payload = %#v", payload)
 	}
+	if payload.MaxOutputTokens != 2048 || payload.Reasoning == nil || payload.Reasoning.Effort != "low" || payload.Stream {
+		t.Fatalf("latency controls = %#v", payload)
+	}
+	prompt := payload.Input[0].Content[0].Text
+	for _, fragment := range []string{"Focus on visual facts", "credible corrective actions", "summarize repetitive or unrelated text", "Return concise plain text"} {
+		if !strings.Contains(prompt, fragment) {
+			t.Fatalf("prompt missing %q: %s", fragment, prompt)
+		}
+	}
 }
 
 func TestHostClientSendsOneOrderedMultiImageRequest(t *testing.T) {
@@ -74,6 +83,9 @@ func TestHostClientSendsOneOrderedMultiImageRequest(t *testing.T) {
 	if len(content) != 5 || content[1].Text != "Image 1:" || content[2].ImageURL != "https://example.com/a.png" || content[3].Text != "Image 2:" || content[4].ImageURL != "https://example.com/b.png" {
 		t.Fatalf("ordered multi-image content = %#v", content)
 	}
+	if payload.MaxOutputTokens != 4096 || payload.Reasoning == nil || payload.Reasoning.Effort != "low" {
+		t.Fatalf("multi-image latency controls = %#v", payload)
+	}
 }
 
 func TestHostClientExposes413ForAdaptiveSplitting(t *testing.T) {
@@ -86,6 +98,34 @@ func TestHostClientExposes413ForAdaptiveSplitting(t *testing.T) {
 	_, err = client.AnalyzeBatch(context.Background(), []ImageInput{{Number: 1, Reference: "https://example.com/a.png"}}, "")
 	if !IsPayloadTooLarge(err) {
 		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestHostClientRetriesWithoutReasoningAfter400(t *testing.T) {
+	calls := 0
+	client, err := NewHostClient(HostOptions{Model: "compat-model", Execute: func(_ context.Context, request pluginapi.HostModelExecutionRequest, _ string) (pluginapi.HostModelExecutionResponse, error) {
+		calls++
+		var payload requestPayload
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		if calls == 1 {
+			if payload.Reasoning == nil || payload.Reasoning.Effort != "low" {
+				t.Fatalf("first payload reasoning = %#v", payload.Reasoning)
+			}
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusBadRequest, Body: []byte(`{"error":"unsupported optional field"}`)}, nil
+		}
+		if payload.Reasoning != nil {
+			t.Fatalf("fallback payload reasoning = %#v", payload.Reasoning)
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"output_text":"compatible"}`)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	result, err := client.Analyze(context.Background(), "https://example.com/image.png", "describe")
+	if err != nil || result != "compatible" || calls != 2 {
+		t.Fatalf("result=%q calls=%d err=%v", result, calls, err)
 	}
 }
 

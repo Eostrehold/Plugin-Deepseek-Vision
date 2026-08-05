@@ -25,9 +25,11 @@ Initial public release.
   analysis instead of reopening consumed attachments with `view_image`.
 - Bilingual CPAMC configuration fields with defaults and validation ranges.
 - Full-context opt-in trace bundles for multi-turn request diagnosis.
+- Task-focused, low-reasoning vision requests that avoid exhaustive unrelated
+  OCR while retaining automatic image detail and actionable visual evidence.
 - Deterministic Linux, macOS, and Windows amd64/arm64 packaging, aggregate
   checksums, contract validation, race tests, mock-host E2E coverage, and
-  tag-driven GitHub Releases.
+  manually triggered Draft Release generation.
 
 ### Release boundary
 

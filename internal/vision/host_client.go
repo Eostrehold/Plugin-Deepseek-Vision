@@ -121,7 +121,8 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	}
 	payload := requestPayload{
 		Model: c.opts.Model, Input: []requestInput{{Role: "user", Content: content}},
-		MaxOutputTokens: 4096,
+		MaxOutputTokens: visionOutputTokenBudget(len(images)),
+		Reasoning:       &requestReasoning{Effort: "low"},
 		Stream:          false,
 	}
 	body, err := json.Marshal(payload)
@@ -152,6 +153,25 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 		})
 	}
 	response, err := c.opts.Execute(ctx, hostRequest, HostCallbackID(ctx))
+	if err == nil && response.StatusCode == http.StatusBadRequest && payload.Reasoning != nil {
+		if session != nil {
+			session.Artifact(prefix+"-reasoning-rejected-response.json", response.Body)
+			session.Event("vlm_reasoning_fallback", map[string]any{
+				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"status_code": response.StatusCode,
+			})
+		}
+		payload.Reasoning = nil
+		fallbackBody, marshalErr := json.Marshal(payload)
+		if marshalErr != nil {
+			return "", marshalErr
+		}
+		hostRequest.Body = fallbackBody
+		if session != nil {
+			session.Artifact(prefix+"-reasoning-fallback-request.json", fallbackBody)
+		}
+		response, err = c.opts.Execute(ctx, hostRequest, HostCallbackID(ctx))
+	}
 	if err != nil {
 		if session != nil {
 			session.Event("vlm_call_finished", map[string]any{
@@ -221,10 +241,22 @@ func imageNumberToken(images []ImageInput) string {
 }
 
 type requestPayload struct {
-	Model           string         `json:"model"`
-	Input           []requestInput `json:"input"`
-	MaxOutputTokens int            `json:"max_output_tokens"`
-	Stream          bool           `json:"stream"`
+	Model           string            `json:"model"`
+	Input           []requestInput    `json:"input"`
+	MaxOutputTokens int               `json:"max_output_tokens"`
+	Reasoning       *requestReasoning `json:"reasoning,omitempty"`
+	Stream          bool              `json:"stream"`
+}
+
+type requestReasoning struct {
+	Effort string `json:"effort"`
+}
+
+func visionOutputTokenBudget(imageCount int) int {
+	if imageCount <= 1 {
+		return 2048
+	}
+	return 4096
 }
 
 type requestInput struct {
