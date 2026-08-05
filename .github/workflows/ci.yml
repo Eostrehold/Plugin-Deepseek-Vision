@@ -71,6 +71,10 @@ jobs:
         if: matrix.goos != 'linux'
         with:
           python-version: "3.x"
+      - name: Install Windows ARM64 CGO toolchain
+        if: matrix.goos == 'windows' && matrix.goarch == 'arm64'
+        shell: pwsh
+        run: ./scripts/setup-windows-arm64-cgo.ps1
       - name: Verify native runner
         if: matrix.goos != 'linux'
         shell: bash

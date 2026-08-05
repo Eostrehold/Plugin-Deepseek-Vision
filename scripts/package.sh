@@ -64,8 +64,9 @@ case "$target_goos" in
     nm -gU "$artifact" >"$symbols_file"
     ;;
   windows)
-    command -v objdump >/dev/null 2>&1 || { echo "objdump is required to verify the Windows ABI export" >&2; exit 2; }
-    objdump -p "$artifact" >"$symbols_file"
+    objdump_bin="${OBJDUMP:-objdump}"
+    command -v "$objdump_bin" >/dev/null 2>&1 || { echo "$objdump_bin is required to verify the Windows ABI export" >&2; exit 2; }
+    "$objdump_bin" -p "$artifact" >"$symbols_file"
     ;;
   *)
     command -v nm >/dev/null 2>&1 || { echo "nm is required to verify the ABI export" >&2; exit 2; }
