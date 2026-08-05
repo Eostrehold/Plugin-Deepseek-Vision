@@ -44,6 +44,18 @@ visual information, but never receives image blocks it cannot read.
 | **Stable configuration lifecycle** | Empty or invalid edits do not unregister the plugin; the last valid runtime and form remain available |
 | **Full diagnostic trace** | Optionally captures context, grouping, VLM calls, cache decisions, and rewritten requests for debugging |
 
+## In action
+
+| Cross-turn image context and model switching | Front-end diagnosis from a screenshot |
+| --- | --- |
+| <img src="docs/assets/full-context-model-switch.png" alt="DeepSeek continues with visual context after a model switch" width="680"> | <img src="docs/assets/frontend-ui-analysis.png" alt="Diagnosing wrapped front-end action buttons from a screenshot" width="680"> |
+| After switching to `deepseek-v4-flash`, historical images are converted into visual context before the target model runs. | The vision model identifies the table, button groups, and wrapping; DeepSeek can then continue into the relevant CSS. |
+
+These are real sessions. See the [raw vision-model explanations](docs/examples/trace-vision-output.md) preserved by
+the diagnostic trace, without manual rewriting. In same-host A/B probes with these images, the task-focused prompt
+and low-reasoning vision request reduced the VLM stage from 27.8s to 7.4s and from 49.1s to 16.6s while retaining
+automatic image detail. `detail=low` was faster but omitted small text and the security alert, so it was rejected.
+
 ## How it works
 
 ```mermaid

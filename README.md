@@ -42,6 +42,18 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 | **稳定配置生命周期** | 空白或无效的编辑不会让插件拒绝注册；保留上一份有效运行时和可配置表单 |
 | **完整诊断 trace** | 可选记录原始上下文、分组、VLM 请求/响应、缓存计划及改写结果，用于复杂多轮排障 |
 
+## 实际效果
+
+| 跨轮次图片理解与模型切换 | 从截图提取前端排障线索 |
+| --- | --- |
+| <img src="docs/assets/full-context-model-switch.png" alt="切换到 DeepSeek 后继续理解历史图片" width="680"> | <img src="docs/assets/frontend-ui-analysis.png" alt="根据截图分析前端按钮排布" width="680"> |
+| 切换到 `deepseek-v4-flash` 后，历史中的图片会先转换为视觉上下文，目标模型不需要直接读图。 | 视觉模型识别表格、按钮分组和换行现象，DeepSeek 再结合代码继续定位 CSS。 |
+
+这些截图来自真实会话。调试 trace 中保存的、未经人工改写的视觉模型解释见
+[原始视觉解释](docs/examples/trace-vision-output.md)。同一宿主和图片的 A/B 测试中，任务导向提示与低推理视觉请求
+把 VLM 阶段从 27.8 秒降至 7.4 秒、从 49.1 秒降至 16.6 秒，同时保留自动图片细节；`detail=low`
+虽更快但会漏掉小字和安全弹窗，因此没有采用。
+
 ## 工作方式
 
 ```mermaid
