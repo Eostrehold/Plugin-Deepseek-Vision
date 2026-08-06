@@ -108,6 +108,11 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 			continue
 		}
 		switch content := rawContent.(type) {
+		case nil:
+			// Assistant tool-call history commonly uses content:null while the
+			// actual call is carried in tool_calls/function_call. It is valid Chat
+			// history and cannot contain an image block, so preserve it unchanged.
+			position++
 		case string:
 			if role == "user" && strings.TrimSpace(content) != "" {
 				candidates = append(candidates, chatFocusCandidate{message: messageIndex, pos: position, text: content})
@@ -240,6 +245,9 @@ func discoverChatImage(block map[string]any, location imageLocation, number int,
 	}
 	rawReference, present := imageURL["url"]
 	if !present {
+		if _, hasFileID := imageURL["file_id"]; hasFileID {
+			return chatPendingImage{}, unsupported("file_id image references are not supported", locationPathChat(location))
+		}
 		return chatPendingImage{}, malformed("image_url requires url", locationPathChat(location))
 	}
 	reference, ok := rawReference.(string)

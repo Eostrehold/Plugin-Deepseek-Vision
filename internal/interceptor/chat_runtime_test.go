@@ -79,6 +79,11 @@ func TestChatRouteGateAndErrors(t *testing.T) {
 	if !unsupported.Terminate || unsupported.StatusCode != http.StatusUnprocessableEntity {
 		t.Fatalf("unsupported response=%#v", unsupported)
 	}
+	fileIDBody := `{"messages":[{"content":[{"type":"image_url","image_url":{"file_id":"file_1"}}]}]}`
+	fileID, _ := r.Handle(makeRequest("deepseek-v4-flash", "openai", "/v1/chat/completions", fileIDBody))
+	if !fileID.Terminate || fileID.StatusCode != http.StatusUnprocessableEntity {
+		t.Fatalf("file_id response=%#v", fileID)
+	}
 }
 
 func TestUnavailableChatImageFailsClosed(t *testing.T) {
@@ -86,5 +91,23 @@ func TestUnavailableChatImageFailsClosed(t *testing.T) {
 	resp, err := HandleUnavailable(makeRequest("deepseek-v4-flash", "openai", "/v1/chat/completions", body), "deepseek-v4-flash")
 	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(resp.ResponseBody), "vision preprocessing is unavailable") {
 		t.Fatalf("response=%#v err=%v", resp, err)
+	}
+}
+
+func TestHandleChatAcceptsNullToolCallHistory(t *testing.T) {
+	r := newTestRuntime(t, &testAnalyzer{})
+	defer r.Shutdown()
+	body := `{"messages":[` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"inspect","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"done"},` +
+		`{"role":"user","content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}` +
+		`]}`
+	resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai", "/v1/chat/completions", body))
+	if err != nil || resp.Terminate {
+		t.Fatalf("response=%#v err=%v", resp, err)
+	}
+	rewritten := string(resp.Body)
+	if !strings.Contains(rewritten, `"content":null`) || !strings.Contains(rewritten, `"tool_calls"`) || strings.Contains(rewritten, `"image_url"`) {
+		t.Fatalf("rewrite changed tool-call history or retained image: %s", rewritten)
 	}
 }

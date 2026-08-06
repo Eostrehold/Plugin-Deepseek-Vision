@@ -81,6 +81,30 @@ func TestDiscoverChatStringContentAndNoImagePassthrough(t *testing.T) {
 	}
 }
 
+func TestDiscoverChatPreservesNullToolCallHistory(t *testing.T) {
+	body := []byte(`{"messages":[` +
+		`{"role":"assistant","content":null,"tool_calls":[{"id":"call_1","type":"function","function":{"name":"inspect","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":"done"},` +
+		`{"role":"user","content":[{"type":"text","text":"describe"},{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}` +
+		`]}`)
+	plan, err := discoverChat(body)
+	if err != nil || !plan.HasImages() {
+		t.Fatalf("plan=%#v err=%v", plan, err)
+	}
+	rewritten, err := plan.RewriteGroupsText([]string{"analysis"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var root map[string]any
+	if err := json.Unmarshal(rewritten, &root); err != nil {
+		t.Fatal(err)
+	}
+	history := root["messages"].([]any)[0].(map[string]any)
+	if history["content"] != nil || len(history["tool_calls"].([]any)) != 1 {
+		t.Fatalf("tool-call history changed: %#v", history)
+	}
+}
+
 func TestDiscoverChatMalformedAndUnsupportedReferences(t *testing.T) {
 	tests := []struct {
 		name string
@@ -94,6 +118,7 @@ func TestDiscoverChatMalformedAndUnsupportedReferences(t *testing.T) {
 		{"block scalar", `{"messages":[{"content":["bad"]}]}`, ErrorMalformedRequest, 400},
 		{"image url scalar", `{"messages":[{"content":[{"type":"image_url","image_url":"https://example.com/x.png"}]}]}`, ErrorMalformedRequest, 400},
 		{"image url missing", `{"messages":[{"content":[{"type":"image_url","image_url":{}}]}]}`, ErrorMalformedRequest, 400},
+		{"file id only", `{"messages":[{"content":[{"type":"image_url","image_url":{"file_id":"file_1"}}]}]}`, ErrorUnsupportedImage, 422},
 		{"image url wrong type", `{"messages":[{"content":[{"type":"image_url","image_url":{"url":3}}]}]}`, ErrorMalformedRequest, 400},
 		{"ftp", `{"messages":[{"content":[{"type":"image_url","image_url":{"url":"ftp://example.com/x.png"}}]}]}`, ErrorUnsupportedImage, 422},
 		{"private", `{"messages":[{"content":[{"type":"image_url","image_url":{"url":"http://127.0.0.1/x.png"}}]}]}`, ErrorUnsupportedImage, 422},
