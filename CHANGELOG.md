@@ -3,6 +3,30 @@
 All notable release changes are documented here. Versions follow Semantic
 Versioning, and release tags use the `vX.Y.Z` form.
 
+## [0.2.0] - 2026-08-05
+
+### Added
+
+- Image preprocessing for OpenAI Chat Completions and Anthropic Messages,
+  including visible history and image-bearing tool results.
+- Protocol-native fail-closed errors for Anthropic clients.
+
+### Changed
+
+- Generalized downstream request planning while keeping host-owned upstream
+  protocol translation and vision execution unchanged.
+- Updated the validated CLIProxyAPI SDK baseline to v7.2.119.
+- Existing `target_models` now apply automatically to Responses, Chat
+  Completions, and Anthropic Messages routes.
+
+### Release boundary
+
+- Validated host SDK: CLIProxyAPI v7.2.119.
+- Published artifact targets remain Linux, macOS, and Windows on amd64/arm64.
+- Release-tested DeepSeek target remains `deepseek-v4-flash`.
+- Image file IDs, hidden server-side history, documents, and response-stream
+  rewriting remain outside the supported conversion boundary.
+
 ## [0.1.1] - 2026-08-04
 
 Initial public release.
@@ -39,4 +63,5 @@ Initial public release.
 - Chat Completions, Anthropic Messages, `file_id`-only images, and hidden
   `previous_response_id` history are outside the supported conversion boundary.
 
+[0.2.0]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.1.1

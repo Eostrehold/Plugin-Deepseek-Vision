@@ -7,10 +7,10 @@
 `deepseek-vision` is a native **CLIProxyAPI v7** request-preprocessing plugin. It uses a vision model already available
 through the host, turns all images in one prompt into a joint visual analysis, and lets DeepSeek continue with text.
 
-[![Release](https://img.shields.io/badge/release-v0.1.1-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.113-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
+[![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
 [![Platforms](https://img.shields.io/badge/platforms-6-4C8BF5)](docs/limitations.md)
 [![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
@@ -30,12 +30,13 @@ visual information, but never receives image blocks it cannot read.
 > setting. CLIProxyAPI continues to own model routing, credentials, protocol translation, transport, retries, and
 > provider rate-limit policy.
 
-## What v0.1.1 provides
+## What v0.2.0 provides
 
 | Capability | Behavior |
 | --- | --- |
 | **Native host execution** | Calls `host.model.execute` with the configured `vision_model`, reusing host routing and credentials |
-| **Prompt-level multi-image analysis** | Sends ordered images from one content/function-output item in one VLM call, preserving comparisons and progression |
+| **Three downstream protocols** | Natively handles images in OpenAI Responses, Chat Completions, and Anthropic Messages requests |
+| **Prompt-level multi-image analysis** | Sends ordered images from one message or tool result in one VLM call, preserving comparisons and progression |
 | **Atomic transparent rewrite** | Replaces images with numbered markers and one joint analysis only after every group succeeds |
 | **Global backpressure** | `max_inflight_vision_requests` bounds process-wide work; excess groups queue instead of being rejected |
 | **Adaptive splitting** | Keeps normal multi-image prompts intact and splits in order only after an explicit host 413 |
@@ -60,7 +61,7 @@ automatic image detail. `detail=low` was faster but omitted small text and the s
 
 ```mermaid
 flowchart LR
-    A["OpenAI Responses request"] --> B["CLIProxyAPI auth, alias and model resolution"]
+    A["Responses, Chat, or Claude request"] --> B["CLIProxyAPI auth, alias and model resolution"]
     B --> C{"Protocol, path and final model match?"}
     C -- "No" --> D["Normal host handling"]
     C -- "Yes" --> E["Scan visible history and group by prompt"]
@@ -68,7 +69,7 @@ flowchart LR
     F --> G{"All analysis and validation succeeds?"}
     G -- "No" --> H["Fail closed; no original images forwarded"]
     G -- "Yes" --> I["Write markers and joint analysis"]
-    I --> J["Verify no input_image remains"]
+    I --> J["Verify no image block remains"]
     J --> K["DeepSeek continues reasoning"]
 ```
 
@@ -92,31 +93,33 @@ so the non-vision target model does not try to open the consumed images again.
 
 ## Support boundary
 
-All three conditions must match:
+One exact route and the final-model gate must match:
 
 ```text
-SourceFormat == "openai-response"
-request_path == "/v1/responses"
+openai-response + /v1/responses
+openai          + /v1/chat/completions
+claude          + /v1/messages
 final Model in target_models
 ```
 
-| Scenario | v0.1.1 |
+| Scenario | v0.2.0 |
 | --- | --- |
 | URL/data-URI `input_image` in `input[].content[]` | ✅ |
 | `input_image` in array-form `function_call_output.output[]` | ✅ |
+| Chat `image_url` in `messages[].content[]`, including tool messages | ✅ |
+| Claude base64/URL images in messages and `tool_result.content[]` | ✅ |
 | String-form `function_call_output.output` | ✅ preserved unchanged |
 | Multiple images and visible historical turns in the request | ✅ |
 | `stream: true` | ✅ preprocessing completes before streaming |
 | Default target `deepseek-v4-flash` | ✅ release-tested |
 | `deepseek-v4-pro` | ⚠️ opt in and verify upstream Responses availability |
-| `/v1/responses/compact` and other models | ➡️ pass through |
-| Chat Completions and Anthropic Messages | ❌ no conversion |
-| Images represented only by `file_id` | ❌ 422 |
+| `/v1/responses/compact`, `/v1/messages/count_tokens`, and other models | ➡️ pass through |
+| Images represented only by file IDs | ❌ 422 |
 | Server-side history hidden behind `previous_response_id` | ❌ not visible to the plugin |
 
 ## Quick start
 
-The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.1.1 ZIP matching the
+The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.2.0 ZIP matching the
 platform where CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases);
 it contains one dynamic library. See the [installation guide](docs/installation.md) for checksum verification,
 other platforms, and upgrades.
@@ -224,11 +227,11 @@ Native builds require Go 1.26, CGO, a platform C compiler, Python, Git, and eith
 `objdump` (Windows). The script targets the current host GOOS/GOARCH by default:
 
 ```bash
-VERSION=0.1.1 ./scripts/package.sh
+VERSION=0.2.0 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-This produces reproducible `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
+This produces reproducible `dist/deepseek-vision_0.2.0_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
 the normal checks, regular pushes and PRs build only the Linux amd64 compatibility package:
 
 ```bash
@@ -239,20 +242,20 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Manually run the Release workflow in GitHub Actions with version `0.1.1` to perform the full six-runner build,
+Manually run the Release workflow in GitHub Actions with version `0.2.0` to perform the full six-runner build,
 aggregate six ZIPs and one checksum file, and attach them to a Draft Release. A maintainer publishes it only after
 inspection. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations
 
-- v0.1.1 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
+- v0.2.0 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
   plugins, but this release does not publish an asset that has not passed native FreeBSD acceptance.
-- Only OpenAI Responses `/v1/responses` is rewritten; no other source protocol receives image conversion.
+- Only the exact Responses, Chat Completions, and Anthropic Messages routes are rewritten.
 - VLM preprocessing completes before streaming, so it adds time to first byte.
 - The cache is process-local and is not shared across CLIProxyAPI instances.
 - Remote URLs are fetched by the selected vision provider; deployments still need DNS, egress, and allowlist policy.
-- `deepseek-v4-pro` is not a v0.1.1 release-acceptance target.
+- `deepseek-v4-pro` is not a v0.2.0 release-acceptance target.
 
 See [limitations](docs/limitations.md) and [security](docs/security.md) for the full boundary.
 
@@ -262,7 +265,7 @@ See [limitations](docs/limitations.md) and [security](docs/security.md) for the 
 | --- | --- |
 | [Installation](docs/installation.md) | Manual / Store / Docker install, upgrade, and rollback |
 | [Configuration](docs/configuration.md) | Fields, defaults, validation, cache, and trace |
-| [Contracts](docs/contracts.md) | ABI, Responses input/output, and error contract |
+| [Contracts](docs/contracts.md) | ABI, three downstream rewrite protocols, and error contracts |
 | [Architecture](docs/architecture.md) | Data flow, module ownership, and host boundary |
 | [Security](docs/security.md) | Credentials, network, prompt injection, and failure safety |
 | [Troubleshooting](docs/troubleshooting.md) | Registration, configuration, 413 / 502, trace, and container permissions |

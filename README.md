@@ -7,10 +7,10 @@
 `deepseek-vision` 是一个面向 **CLIProxyAPI v7** 的原生请求预处理插件。它通过宿主已有的视觉模型读取图片，
 把同一 prompt 中的多张图片转换为一份联合视觉分析，再交给 DeepSeek 继续推理。
 
-[![Release](https://img.shields.io/badge/release-v0.1.1-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.2.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
-[![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.113-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
+[![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
 [![Platforms](https://img.shields.io/badge/platforms-6-4C8BF5)](docs/limitations.md)
 [![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
@@ -28,12 +28,13 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 > 这不是新的代理、模型提供商或协议转换层。插件不配置额外 endpoint 或 API key；模型路由、凭据、协议转换、
 > 网络传输、重试与供应商限流都继续由 CLIProxyAPI 负责。
 
-## v0.1.1 有什么
+## v0.2.0 有什么
 
 | 能力 | 行为 |
 | --- | --- |
 | **宿主原生视觉调用** | 通过 `host.model.execute` 使用 CLIProxyAPI 已配置的 `vision_model`、路由和凭据 |
-| **prompt 级多图理解** | 同一 content / function output 中的图片按顺序一次交给 VLM，保留比较、变化和上下文关系 |
+| **三种下游协议** | 原生处理 OpenAI Responses、Chat Completions 和 Anthropic Messages 请求中的图片 |
+| **prompt 级多图理解** | 同一消息或工具结果中的图片按顺序一次交给 VLM，保留比较、变化和上下文关系 |
 | **透明且原子的改写** | 原图替换为编号标记和一份联合分析；只有全部处理成功后才把请求交给 DeepSeek |
 | **全局背压** | `max_inflight_vision_requests` 限制全进程在途视觉任务，多余任务排队而不是被粗暴拒绝 |
 | **按需拆批** | 正常多图请求保持完整；只有宿主明确返回 413 时才按原顺序自适应拆分 |
@@ -58,7 +59,7 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 
 ```mermaid
 flowchart LR
-    A["OpenAI Responses 请求"] --> B["CLIProxyAPI 鉴权、别名与模型解析"]
+    A["Responses、Chat 或 Claude 请求"] --> B["CLIProxyAPI 鉴权、别名与模型解析"]
     B --> C{"协议、路径和最终模型命中？"}
     C -- "否" --> D["宿主原样处理"]
     C -- "是" --> E["扫描可见历史并按 prompt 分组"]
@@ -66,7 +67,7 @@ flowchart LR
     F --> G{"全部分析和校验成功？"}
     G -- "否" --> H["安全终止，不转发原图"]
     G -- "是" --> I["写入图片标记与联合分析"]
-    I --> J["确认请求中不再含 input_image"]
+    I --> J["确认请求中不再含图片块"]
     J --> K["DeepSeek 继续推理"]
 ```
 
@@ -88,33 +89,35 @@ VLM 提示词要求忠实转录文字、标记无法辨认的内容、解释多�
 
 ## 支持边界
 
-请求必须同时满足：
+请求必须命中以下任一路由，并满足最终模型门控：
 
 ```text
-SourceFormat == "openai-response"
-request_path == "/v1/responses"
+openai-response + /v1/responses
+openai          + /v1/chat/completions
+claude          + /v1/messages
 final Model ∈ target_models
 ```
 
-| 场景 | v0.1.1 |
+| 场景 | v0.2.0 |
 | --- | --- |
 | `input[].content[]` 中的 URL / data URI `input_image` | ✅ |
 | 数组型 `function_call_output.output[]` 中的 `input_image` | ✅ |
+| Chat `messages[].content[]` 中的 `image_url`，包括 tool 消息 | ✅ |
+| Claude message 和 `tool_result.content[]` 中的 base64 / URL 图片 | ✅ |
 | 字符串型 `function_call_output.output` | ✅ 原样保留 |
 | 同一 prompt 多图、请求中可见的历史轮次图片 | ✅ |
 | `stream: true` | ✅ 先预处理，再开始响应流 |
 | 默认目标 `deepseek-v4-flash` | ✅ 已验收 |
 | `deepseek-v4-pro` | ⚠️ 需显式加入并自行验证上游 Responses 可用性 |
-| `/v1/responses/compact`、其他模型 | ➡️ 旁路 |
-| Chat Completions、Anthropic Messages | ❌ 不转换 |
-| 仅提供 `file_id` 的图片 | ❌ 返回 422 |
+| `/v1/responses/compact`、`/v1/messages/count_tokens`、其他模型 | ➡️ 旁路 |
+| 仅提供文件 ID 的图片 | ❌ 返回 422 |
 | `previous_response_id` 隐藏的服务端历史 | ❌ 插件不可见 |
 
 ## 快速开始
 
 当前插件尚未收录到 CLIProxyAPI 官方插件源，需要先从
 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载与 CLIProxyAPI 运行平台匹配的
-v0.1.1 ZIP；解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见
+v0.2.0 ZIP；解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见
 [安装文档](docs/installation.md)。
 
 ### Docker 部署
@@ -216,11 +219,11 @@ request bundle 包含完整原始 body、图片 URL / data URI、发现位置、
 `objdump`（Windows）。脚本默认构建当前宿主的 GOOS/GOARCH：
 
 ```bash
-VERSION=0.1.1 ./scripts/package.sh
+VERSION=0.2.0 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-产物是可复现的 `dist/deepseek-vision_0.1.1_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
+产物是可复现的 `dist/deepseek-vision_0.2.0_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
 普通提交和 PR 除常规检查外，只构建 Linux amd64 兼容包：
 
 ```bash
@@ -231,20 +234,20 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-在 GitHub Actions 中手动运行 Release workflow 并输入 `0.1.1` 后，它才会在 6 个原生 runner 上全量
+在 GitHub Actions 中手动运行 Release workflow 并输入 `0.2.0` 后，它才会在 6 个原生 runner 上全量
 构建，聚合 6 个 ZIP 与一份 checksum，并把资产写入 Draft Release；检查无误后再由维护者手动发布。
 CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制
 
-- v0.1.1 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
+- v0.2.0 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
   但本版本尚未发布未经 FreeBSD 实机验收的资产。
-- 插件仅改写 OpenAI Responses `/v1/responses`，不实现其他协议的图片转换。
+- 插件只改写精确命中的 Responses、Chat Completions 和 Anthropic Messages 路由。
 - 预处理必须在响应流开始前完成，因此 VLM 延迟会增加首字节时间。
 - 缓存为进程内缓存，不会在多个 CLIProxyAPI 实例间共享。
 - URL 图片会由视觉模型所在上游读取；仍需根据部署设置 DNS、网络出口和 allowlist。
-- `deepseek-v4-pro` 不是 v0.1.1 的发布验收目标。
+- `deepseek-v4-pro` 不是 v0.2.0 的发布验收目标。
 
 完整边界见 [限制说明](docs/limitations.md) 与 [安全说明](docs/security.md)。
 
@@ -254,7 +257,7 @@ CI 和发布包
 | --- | --- |
 | [安装与运维](docs/installation.md) | 手动 / Store / Docker 安装、升级和回滚 |
 | [完整配置](docs/configuration.md) | 字段、默认值、校验、缓存和 trace |
-| [接口契约](docs/contracts.md) | ABI、Responses 输入输出与错误契约 |
+| [接口契约](docs/contracts.md) | ABI、三种下游协议输入改写与错误契约 |
 | [架构说明](docs/architecture.md) | 数据流、模块职责与宿主边界 |
 | [安全说明](docs/security.md) | 凭据、网络、提示注入与失败安全 |
 | [故障排查](docs/troubleshooting.md) | 注册、配置、413 / 502、trace 与容器权限 |

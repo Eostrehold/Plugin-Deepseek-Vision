@@ -15,7 +15,7 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
-	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/downstream"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/vision"
 )
@@ -235,11 +235,11 @@ func TestHandleTracesExactConfiguredLimitWithoutContent(t *testing.T) {
 }
 
 func TestPublicLimitMessagesAreSpecific(t *testing.T) {
-	tests := map[responses.LimitKind]string{
-		responses.LimitRequestBody:    "request body exceeds configured limit",
-		responses.LimitImageReference: "image reference exceeds configured limit",
-		responses.LimitImageCount:     "request contains too many images",
-		responses.LimitVLMResult:      "vision result exceeds configured limit",
+	tests := map[downstream.LimitKind]string{
+		downstream.LimitRequestBody:    "request body exceeds configured limit",
+		downstream.LimitImageReference: "image reference exceeds configured limit",
+		downstream.LimitImageCount:     "request contains too many images",
+		downstream.LimitVLMResult:      "vision result exceeds configured limit",
 	}
 	for limit, want := range tests {
 		if got := publicLimitMessage(limit, 0, 0); got != want {

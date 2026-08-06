@@ -11,7 +11,7 @@ from pathlib import Path
 
 root = Path(os.environ["REPO_DIR"])
 fixture_dir = root / "testdata" / "responses"
-required = {
+required_responses = {
     "01-content-input-image.json",
     "02-function-call-output.json",
     "03-multi-image-mixed.json",
@@ -22,11 +22,24 @@ required = {
     "07-rpc-after-auth.json",
 }
 actual = {p.name for p in fixture_dir.glob("*.json")}
-missing = required - actual
+missing = required_responses - actual
 if missing:
     raise SystemExit(f"missing required fixtures: {sorted(missing)}")
 
-for path in sorted(fixture_dir.glob("*.json")):
+protocol_fixtures = {
+    root / "testdata" / "chat": {"01-user-image.json", "02-tool-image.json", "03-no-image.json"},
+    root / "testdata" / "claude": {"01-user-base64.json", "02-tool-result-url.json", "03-no-image.json"},
+}
+for directory, required in protocol_fixtures.items():
+    found = {p.name for p in directory.glob("*.json")}
+    missing = required - found
+    if missing:
+        raise SystemExit(f"missing required fixtures in {directory.name}: {sorted(missing)}")
+
+all_fixture_paths = list(fixture_dir.glob("*.json"))
+for directory in protocol_fixtures:
+    all_fixture_paths.extend(directory.glob("*.json"))
+for path in sorted(all_fixture_paths):
     data = json.loads(path.read_text())
     if not isinstance(data, dict):
         raise SystemExit(f"fixture root must be object: {path}")
@@ -52,7 +65,9 @@ contract = (root / "docs" / "contracts.md").read_text()
 for marker in (
     "ABI 版本：`1`",
     "schema 版本：`2`",
-    "SourceFormat == \"openai-response\"",
+    "`openai-response` + `/v1/responses`",
+    "openai` + `/v1/chat/completions",
+    "claude` + `/v1/messages",
     "request.intercept_after",
     "deepseek-v4-flash",
     "deepseek-v4-pro",
@@ -69,5 +84,5 @@ for rpc_name in ("07-rpc-after-auth.json", "06-compact-rpc.json"):
     rpc = json.loads((fixture_dir / rpc_name).read_text())
     if rpc.get("ToFormat") != "openai":
         raise SystemExit(f"{rpc_name} must demonstrate a host-selected non-frozen ToFormat")
-print(f"verified {len(actual)} JSON fixtures and required contract markers")
+print(f"verified {len(all_fixture_paths)} JSON fixtures and required contract markers")
 PY

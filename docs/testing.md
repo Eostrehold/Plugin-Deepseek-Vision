@@ -27,12 +27,14 @@ services:
 ```bash
 docker compose -f docker/docker-compose.example.yml config
 docker build --file docker/Dockerfile.plugin --target artifact \
-  --build-arg VERSION=0.1.1 \
+  --build-arg VERSION=0.2.0 \
   --output type=local,dest=/tmp/deepseek-vision-plugin .
 ```
 
 End-to-end validation uses a real CLIProxyAPI process with mock providers to
-assert that `host.model.execute` performs routing, credentials, protocol
-translation, and self-skip without recursion, and that a failed VLM call
-results in zero downstream calls. No plugin key is required. Release acceptance
-targets `deepseek-v4-flash`; `deepseek-v4-pro` remains future-supported only.
+exercise Responses, Chat Completions, and Anthropic Messages routes. It asserts
+that `host.model.execute` performs routing, credentials, protocol translation,
+and self-skip without recursion; rewritten upstream requests contain no image
+blocks; and a failed VLM call results in zero business-upstream calls. No plugin
+key is required. Release acceptance targets `deepseek-v4-flash`;
+`deepseek-v4-pro` remains future-supported only.

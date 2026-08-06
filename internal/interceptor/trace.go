@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
-	"github.com/zesuy/Plugin-Deepseek-Vision/internal/responses"
+	"github.com/zesuy/Plugin-Deepseek-Vision/internal/downstream"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/tracelog"
 )
 
@@ -83,15 +83,16 @@ func (r *Runtime) safeStartFullTrace(state *runtimeState, req pluginapi.RequestI
 	return r.startFullTrace(state, req)
 }
 
-func traceDiscovery(session *tracelog.Session, plan *responses.Plan) {
+func traceDiscovery(session *tracelog.Session, plan downstream.Plan) {
 	if session == nil || plan == nil {
 		return
 	}
 	images := plan.Images()
 	session.JSON("20-discovery.json", map[string]any{
-		"summary": plan.ImageCountDetails(),
-		"images":  images,
-		"groups":  plan.Groups(),
+		"protocol": plan.Protocol(),
+		"summary":  plan.ImageCountDetails(),
+		"images":   images,
+		"groups":   plan.Groups(),
 	})
 	session.Event("discovery_completed", plan.ImageCountDetails())
 }
@@ -100,7 +101,7 @@ func traceDiscoveryError(session *tracelog.Session, err error) {
 	if session == nil || err == nil {
 		return
 	}
-	var planner *responses.Error
+	var planner *downstream.Error
 	if !errors.As(err, &planner) {
 		session.JSON("20-discovery-error.json", map[string]any{"error": err.Error()})
 		session.Event("discovery_failed", map[string]any{"error": err.Error()})

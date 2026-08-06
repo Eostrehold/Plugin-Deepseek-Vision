@@ -4,7 +4,7 @@ set -euo pipefail
 # Build and package a native c-shared plugin target. Vision-model routing and
 # credentials are host-owned; this script never reads or writes credentials.
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
-version="${VERSION:-0.1.1}"
+version="${VERSION:-0.2.0}"
 dist_dir="${DIST_DIR:-${repo_dir}/dist}"
 go_bin="${GO:-go}"
 python_bin="${PYTHON:-python3}"

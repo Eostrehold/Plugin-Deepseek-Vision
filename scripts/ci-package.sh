@@ -5,7 +5,7 @@ repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 target_goos="${TARGET_GOOS:?TARGET_GOOS is required}"
 target_goarch="${TARGET_GOARCH:?TARGET_GOARCH is required}"
 dist_dir="${DIST_DIR:-dist}"
-version="${VERSION:-0.1.1}"
+version="${VERSION:-0.2.0}"
 
 if [[ "$target_goos" != "linux" ]]; then
   VERSION="$version" TARGET_GOOS="$target_goos" TARGET_GOARCH="$target_goarch" \

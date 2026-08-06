@@ -2,7 +2,7 @@
 // rewriter used by the request interceptor. It intentionally knows nothing
 // about HTTP or the VLM client: discovery happens first, and Rewrite is called
 // only after every image has a successful VLM result.
-package responses
+package downstream
 
 import (
 	"bytes"
@@ -117,7 +117,7 @@ type ImageResult struct {
 
 // Plan is an immutable discovery result. A Plan may be rewritten repeatedly;
 // each call works on a fresh JSON tree and never mutates the original body.
-type Plan struct {
+type responsesPlan struct {
 	original   []byte
 	root       any
 	images     []Image
@@ -126,11 +126,13 @@ type Plan struct {
 	inputItems int
 }
 
+func (*responsesPlan) Protocol() Protocol { return ProtocolResponses }
+
 // Discover parses a Responses request body and records every supported image
 // in input[].content[] and function_call_output.output[]. The variadic form
 // keeps the common Discover(body) call concise while allowing the interceptor
 // to pass explicit limits.
-func Discover(body []byte, options ...Options) (*Plan, error) {
+func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 	opt := Options{}.normalized()
 	if len(options) > 0 {
 		opt = options[0].normalized()
@@ -148,7 +150,7 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 		return nil, malformed("Responses request must be a JSON object", "body")
 	}
 
-	plan := &Plan{
+	plan := &responsesPlan{
 		original: append([]byte(nil), body...),
 		root:     root,
 		options:  opt,
@@ -444,14 +446,14 @@ func locationSource(kind locationKind) string {
 	return "content"
 }
 
-func (p *Plan) InputItemCount() int {
+func (p *responsesPlan) InputItemCount() int {
 	if p == nil {
 		return 0
 	}
 	return p.inputItems
 }
 
-func (p *Plan) ImageCountDetails() ImageCountDetails {
+func (p *responsesPlan) ImageCountDetails() ImageCountDetails {
 	if p == nil {
 		return ImageCountDetails{LastImageItemIndex: -1}
 	}
@@ -460,7 +462,7 @@ func (p *Plan) ImageCountDetails() ImageCountDetails {
 
 // Images returns a copy of the discovered image metadata. The returned slice
 // and its values may be freely modified by the caller.
-func (p *Plan) Images() []Image {
+func (p *responsesPlan) Images() []Image {
 	if p == nil || len(p.images) == 0 {
 		return nil
 	}
@@ -473,7 +475,7 @@ func (p *Plan) Images() []Image {
 }
 
 // Groups returns a deep copy of the prompt-level visual work units.
-func (p *Plan) Groups() []PromptGroup {
+func (p *responsesPlan) Groups() []PromptGroup {
 	if p == nil || len(p.groups) == 0 {
 		return nil
 	}
@@ -490,4 +492,4 @@ func (p *Plan) Groups() []PromptGroup {
 }
 
 // HasImages reports whether discovery found at least one image.
-func (p *Plan) HasImages() bool { return p != nil && len(p.images) > 0 }
+func (p *responsesPlan) HasImages() bool { return p != nil && len(p.images) > 0 }
