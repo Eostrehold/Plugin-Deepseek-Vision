@@ -181,7 +181,10 @@ func Discover(body []byte, options ...Options) (*Plan, error) {
 		role, _ := itemObject["role"].(string)
 		itemType, _ := itemObject["type"].(string)
 
-		if rawContent, exists := itemObject["content"]; exists {
+		// Responses reasoning items may include an explicit null content field.
+		// A null content container has no blocks to inspect and must remain a
+		// valid, image-free passthrough rather than being rejected as malformed.
+		if rawContent, exists := itemObject["content"]; exists && rawContent != nil {
 			content, ok := rawContent.([]any)
 			if !ok {
 				return nil, malformed("input.content must be an array", fmt.Sprintf("input[%d].content", inputIndex))

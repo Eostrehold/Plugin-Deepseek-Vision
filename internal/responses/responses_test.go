@@ -214,6 +214,21 @@ func TestTopLevelStringAndNoInputPassthrough(t *testing.T) {
 	}
 }
 
+func TestReasoningItemWithNullContentPassesThrough(t *testing.T) {
+	body := `{"model":"deepseek-v4-flash","input":[{"type":"reasoning","id":"rs_1","summary":[{"type":"summary_text","text":"prior reasoning"}],"content":null,"encrypted_content":""}],"stream":true}`
+	plan, err := Discover([]byte(body))
+	if err != nil {
+		t.Fatalf("reasoning item with null content rejected: %v", err)
+	}
+	if plan.HasImages() {
+		t.Fatal("reasoning item with null content unexpectedly produced an image")
+	}
+	out, err := plan.RewriteGroupsText(nil)
+	if err != nil || string(out) != body {
+		t.Fatalf("null-content reasoning item was not preserved: %s, err=%v", out, err)
+	}
+}
+
 func TestStringFunctionCallOutputIsValidAndPreserved(t *testing.T) {
 	body := `{"input":[{"type":"function_call_output","call_id":"call_1","output":"unable to locate image"}]}`
 	plan, err := Discover([]byte(body))
