@@ -194,7 +194,7 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{
-				{Name: "target_models", Type: pluginapi.ConfigFieldTypeArray, Description: "需要视觉预处理的最终文本模型 JSON 数组。默认值 / JSON array of final text models eligible for vision preprocessing. Default: [\"deepseek-v4-flash\"]."},
+				{Name: "target_models", Type: pluginapi.ConfigFieldTypeArray, Description: "需要视觉预处理的最终文本模型 JSON 数组。默认模型：deepseek-v4-flash。/ JSON array of final text models eligible for vision preprocessing. Default target: deepseek-v4-flash."},
 				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
 				{Name: "vision_fallback_models", Type: pluginapi.ConfigFieldTypeArray, Description: "主视觉模型失败后按顺序尝试的宿主模型 JSON 数组，最多 3 个。默认空。/ JSON array of ordered host vision fallback models, maximum 3. Default: empty."},
 				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},

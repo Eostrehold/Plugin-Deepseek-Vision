@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"html"
 	"net/http"
 	"sync"
 	"testing"
@@ -52,6 +53,9 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	for _, field := range result.Metadata.ConfigFields {
 		if field.Description == "" {
 			t.Errorf("field %q has no description", field.Name)
+		}
+		if escaped := html.EscapeString(field.Description); escaped != field.Description {
+			t.Errorf("field %q description changes under host HTML sanitization: %q", field.Name, escaped)
 		}
 		if wantType, ok := wantFields[field.Name]; ok {
 			if field.Type != wantType {
