@@ -76,8 +76,8 @@ done
 
 echo "building plugin and CLIProxyAPI host"
 CGO_ENABLED=1 GOTOOLCHAIN=auto go build -buildmode=c-shared -trimpath \
-  -ldflags='-s -w -X main.pluginVersion=0.2.0-host-e2e' \
-  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.2.0.so" "$ROOT"
+  -ldflags='-s -w -X main.pluginVersion=0.3.0-host-e2e' \
+  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.3.0.so" "$ROOT"
 (cd "$CLI_ROOT" && CGO_ENABLED=1 GOTOOLCHAIN=auto go build -trimpath -o "$TMP/cliproxy" ./cmd/server)
 
 CONFIG="$TMP/config.yaml"
@@ -105,9 +105,11 @@ plugins:
       priority: 100
       store:
         source: "host-e2e"
-        version: "0.2.0"
+        version: "0.3.0"
       target_models: [deepseek-v4-flash]
       vision_model: "gpt-5.6-luna"
+      vision_fallback_models: []
+      agent_reanalysis_enabled: true
       language: "en"
       request_timeout_seconds: 10
       max_inflight_vision_requests: 4
@@ -119,6 +121,7 @@ plugins:
       analysis_cache_size: 16
       analysis_cache_ttl_seconds: 60
       analysis_url_cache_ttl_seconds: 30
+      trace_enabled: true
 openai-compatibility:
   - name: vision-e2e
     base-url: "http://127.0.0.1:{vlm_port}/v1"
@@ -193,8 +196,9 @@ assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
 fields = {field["name"]: field["type"] for field in item["config_fields"]}
-assert len(fields) == 9, fields
+assert len(fields) == 11, fields
 assert fields["vision_model"] == "string", fields
+assert fields["vision_fallback_models"] == "array", fields
 assert fields["language"] == "enum", fields
 assert fields["max_inflight_vision_requests"] == "integer", fields
 assert fields["emergency_max_images_per_request"] == "integer", fields
@@ -202,6 +206,7 @@ assert fields["request_timeout_seconds"] == "integer", fields
 assert fields["analysis_cache_size"] == "integer", fields
 assert fields["analysis_cache_ttl_seconds"] == "integer", fields
 assert fields["analysis_url_cache_ttl_seconds"] == "integer", fields
+assert fields["agent_reanalysis_enabled"] == "boolean", fields
 assert fields["trace_enabled"] == "boolean", fields
 PY
 mgmt "$BASE/v0/management/plugins/deepseek-vision/config" >"$TMP/plugin-config.json"
@@ -209,12 +214,14 @@ python3 - "$TMP/plugin-config.json" <<'PY'
 import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
 assert payload.get("store", {}).get("source") == "host-e2e", payload
-assert payload.get("store", {}).get("version") == "0.2.0", payload
+assert payload.get("store", {}).get("version") == "0.3.0", payload
 assert payload.get("analysis_cache_size") == 16, payload
 assert payload.get("analysis_cache_ttl_seconds") == 60, payload
 assert payload.get("analysis_url_cache_ttl_seconds") == 30, payload
 assert payload.get("max_inflight_vision_requests") == 4, payload
 assert payload.get("emergency_max_images_per_request") == 256, payload
+assert payload.get("vision_fallback_models") == [], payload
+assert payload.get("agent_reanalysis_enabled") is True, payload
 PY
 echo "plugin registered/effective and store metadata accepted"
 
@@ -342,27 +349,122 @@ PY
 assert_success multi /v1/responses "$multi_body" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 5))"
 assert_last_upstream_rewritten
 
+agent_body=$(python3 - <<'PY'
+import base64, json
+def image(n):
+    return "data:image/png;base64," + base64.b64encode(("agent-" + str(n)).encode()).decode()
+print(json.dumps({"model":"deepseek-v4-flash","tools":[
+ {"type":"function","name":"view_image"},
+ {"type":"function","name":"deepseek_vision_reanalyze"}
+],"input":[
+ {"role":"user","content":[{"type":"input_text","text":"Inspect spacing and small labels"}]},
+ {"type":"function_call","name":"view_image","call_id":"view_e2e","arguments":"{\"path\":\"/tmp/.codex/attachments/att_e2e/shot.png\",\"detail\":\"high\"}"},
+ {"type":"function_call_output","call_id":"view_e2e","output":[{"type":"input_image","image_url":image(1)}]},
+ {"type":"function_call","name":"deepseek_vision_reanalyze","call_id":"reanalyze_e2e","arguments":json.dumps({"attachment_ids":["att_e2e"],"focus":"Read only the small labels","detail":"original","cache":"no_store"})},
+ {"type":"function_call_output","call_id":"reanalyze_e2e","output":[{"type":"input_image","image_url":image(2)}]}
+],"stream":False}, separators=(",", ":")))
+PY
+)
+assert_success agent-tools /v1/responses "$agent_body" "$((VLM_BEFORE + 7))" "$((UPSTREAM_BEFORE + 6))"
+assert_last_upstream_rewritten
+grep -q 'Task-specific visual reanalysis' "$UPSTREAM_STATE" || { echo "agent reanalysis marker missing from upstream request" >&2; exit 1; }
+
+# Full-context trace is deliberately high sensitivity. This fixture keeps it in
+# the private disposable E2E directory and verifies the complete request/VLM/
+# rewrite chain without copying any artifact into the repository.
+python3 - "$TMP/logs/deepseek-vision-trace" <<'PY'
+import json
+import pathlib
+import stat
+import sys
+from collections import Counter
+
+root = pathlib.Path(sys.argv[1])
+events_path = root / "events.jsonl"
+assert root.is_dir(), root
+assert events_path.is_file(), events_path
+assert stat.S_IMODE(root.stat().st_mode) == 0o700, oct(root.stat().st_mode)
+assert stat.S_IMODE(events_path.stat().st_mode) == 0o600, oct(events_path.stat().st_mode)
+
+matches = []
+for inbound in (root / "requests").glob("*/10-inbound-body.json"):
+    raw = inbound.read_text(encoding="utf-8")
+    if "view_e2e" in raw and "reanalyze_e2e" in raw:
+        matches.append(inbound.parent)
+assert len(matches) == 1, matches
+bundle = matches[0]
+
+required = [
+    "00-metadata.json", "10-inbound-body.json", "20-discovery.json",
+    "30-cache-plan.json", "50-rewritten-body.json", "90-result.json",
+]
+for name in required:
+    path = bundle / name
+    assert path.is_file(), path
+    assert stat.S_IMODE(path.stat().st_mode) == 0o600, (path, oct(path.stat().st_mode))
+
+vlm_metadata = sorted(
+    path for path in bundle.glob("40-vlm-job-*-metadata.json")
+    if not path.name.endswith("-request-metadata.json") and not path.name.endswith("-response-metadata.json")
+)
+vlm_requests = sorted(path for path in bundle.glob("40-vlm-job-*-request.json") if "-reasoning-" not in path.name)
+vlm_responses = sorted(path for path in bundle.glob("40-vlm-job-*-response.json") if "-reasoning-" not in path.name)
+vlm_results = sorted(bundle.glob("40-vlm-job-*-parsed-result.txt"))
+assert len(vlm_metadata) == len(vlm_requests) == len(vlm_responses) == len(vlm_results) == 2, (
+    vlm_metadata, vlm_requests, vlm_responses, vlm_results
+)
+
+metadata_text = "\n".join(path.read_text(encoding="utf-8") for path in vlm_metadata)
+request_text = "\n".join(path.read_text(encoding="utf-8") for path in vlm_requests)
+assert "Inspect spacing and small labels" in metadata_text, metadata_text[:2000]
+assert "Read only the small labels" in metadata_text, metadata_text[:2000]
+assert "data:image/png;base64," in request_text, request_text[:2000]
+
+inbound_text = (bundle / "10-inbound-body.json").read_text(encoding="utf-8")
+rewritten_text = (bundle / "50-rewritten-body.json").read_text(encoding="utf-8")
+assert "data:image/png;base64," in inbound_text, inbound_text[:2000]
+assert "data:image/" not in rewritten_text, rewritten_text[:2000]
+assert '"type":"input_image"' not in rewritten_text, rewritten_text[:2000]
+assert "Task-specific visual reanalysis" in rewritten_text, rewritten_text[:2000]
+assert "view_e2e" in rewritten_text and "reanalyze_e2e" in rewritten_text, rewritten_text[:2000]
+
+events = [json.loads(line) for line in events_path.read_text(encoding="utf-8").splitlines() if line.strip()]
+bundle_name = "requests/" + bundle.name
+names = [event["event"] for event in events if event.get("bundle") == bundle_name]
+assert names.count("vlm_call_started") == 2, names
+assert names.count("vlm_call_finished") == 2, names
+assert names.count("vlm_fallback_selected") == 2, names
+assert names.count("rewrite_completed") == 1, names
+assert names.count("interceptor_completed") == 1, names
+bundle_events = [event for event in events if event.get("bundle") == bundle_name]
+started_jobs = Counter((event.get("data") or {}).get("job_id") for event in bundle_events if event.get("event") == "vlm_call_started")
+selected_jobs = Counter((event.get("data") or {}).get("job_id") for event in bundle_events if event.get("event") == "vlm_fallback_selected")
+assert started_jobs == Counter({1: 1, 2: 1}), started_jobs
+assert selected_jobs == started_jobs, (started_jobs, selected_jobs)
+PY
+echo "plaintext trace captured and verified for rich tool-output reanalysis"
+
 no_image='{"model":"deepseek-v4-flash","input":[{"role":"user","content":[{"type":"input_text","text":"plain"}]}],"stream":false}'
-assert_success no-image /v1/responses "$no_image" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 6))"
+assert_success no-image /v1/responses "$no_image" "$((VLM_BEFORE + 7))" "$((UPSTREAM_BEFORE + 7))"
 
 non_target=$(make_request other-model false non-target)
-assert_success non-target /v1/responses "$non_target" "$((VLM_BEFORE + 5))" "$((UPSTREAM_BEFORE + 7))"
+assert_success non-target /v1/responses "$non_target" "$((VLM_BEFORE + 7))" "$((UPSTREAM_BEFORE + 8))"
 
 compact=$(make_request deepseek-v4-flash false compact)
 code=$(post /v1/responses/compact "$compact" "$TMP/compact.out")
 [[ "$code" == "200" ]] || { echo "compact failed HTTP $code" >&2; exit 1; }
 vlm_count=$(state_json "http://127.0.0.1:$VLM_PORT" | count_role)
 upstream_count=$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)
-[[ "$vlm_count" == "$((VLM_BEFORE + 5))" ]] || { echo "compact was not bypassed" >&2; exit 1; }
-[[ "$upstream_count" == "$((UPSTREAM_BEFORE + 8))" ]] || { echo "compact upstream count=$upstream_count" >&2; exit 1; }
+[[ "$vlm_count" == "$((VLM_BEFORE + 7))" ]] || { echo "compact was not bypassed" >&2; exit 1; }
+[[ "$upstream_count" == "$((UPSTREAM_BEFORE + 9))" ]] || { echo "compact upstream count=$upstream_count" >&2; exit 1; }
 
 chat_body=$(make_chat_request deepseek-v4-flash true chat-stream)
-assert_success chat-stream /v1/chat/completions "$chat_body" "$((VLM_BEFORE + 6))" "$((UPSTREAM_BEFORE + 9))"
+assert_success chat-stream /v1/chat/completions "$chat_body" "$((VLM_BEFORE + 8))" "$((UPSTREAM_BEFORE + 10))"
 grep -q 'data:' "$TMP/chat-stream.out" || { echo "chat stream response did not contain SSE" >&2; exit 1; }
 assert_last_upstream_rewritten
 
 claude_body=$(make_claude_request deepseek-v4-flash false claude-tools true)
-assert_success claude /v1/messages "$claude_body" "$((VLM_BEFORE + 8))" "$((UPSTREAM_BEFORE + 10))"
+assert_success claude /v1/messages "$claude_body" "$((VLM_BEFORE + 10))" "$((UPSTREAM_BEFORE + 11))"
 assert_last_upstream_rewritten
 python3 - "$TMP/claude.out" <<'PY'
 import json, sys
@@ -375,13 +477,16 @@ failure=$(make_request deepseek-v4-flash false vlm-failure)
 code=$(post /v1/responses "$failure" "$TMP/failure.out")
 [[ "$code" == "502" ]] || { echo "VLM failure HTTP $code, want 502" >&2; exit 1; }
 grep -q 'vision_preprocess_error' "$TMP/failure.out" || { echo "failure response was not sanitized" >&2; exit 1; }
-[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 10))" ]] || { echo "upstream called after Responses VLM failure" >&2; exit 1; }
+grep -q 'vision_fallback_exhausted' "$TMP/failure.out" || { echo "failure response omitted fallback code" >&2; exit 1; }
+grep -q 'error_id' "$TMP/failure.out" || { echo "failure response omitted correlation ID" >&2; exit 1; }
+[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 11))" ]] || { echo "upstream called after Responses VLM failure" >&2; exit 1; }
 
 chat_failure=$(make_chat_request deepseek-v4-flash false chat-failure)
 code=$(post /v1/chat/completions "$chat_failure" "$TMP/chat-failure.out")
 [[ "$code" == "502" ]] || { echo "Chat VLM failure HTTP $code, want 502" >&2; exit 1; }
 grep -q 'vision_preprocess_error' "$TMP/chat-failure.out" || { echo "Chat failure response was not OpenAI-shaped" >&2; exit 1; }
-[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 10))" ]] || { echo "upstream called after Chat VLM failure" >&2; exit 1; }
+grep -q 'vision_fallback_exhausted' "$TMP/chat-failure.out" || { echo "Chat failure response omitted fallback code" >&2; exit 1; }
+[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 11))" ]] || { echo "upstream called after Chat VLM failure" >&2; exit 1; }
 
 claude_failure=$(make_claude_request deepseek-v4-flash false claude-failure false)
 code=$(post /v1/messages "$claude_failure" "$TMP/claude-failure.out")
@@ -391,20 +496,22 @@ import json, sys
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
 assert payload.get("type") == "error", payload
 assert payload.get("error", {}).get("type") == "api_error", payload
+assert payload.get("error", {}).get("code") == "vision_fallback_exhausted", payload
+assert payload.get("error", {}).get("details", {}).get("error_id", "").startswith("vpe_"), payload
 PY
-[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 10))" ]] || { echo "upstream called after Claude VLM failure" >&2; exit 1; }
+[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 11))" ]] || { echo "upstream called after Claude VLM failure" >&2; exit 1; }
 printf 'ok\n' >"$VLM_MODE"
 
 unsupported='{"model":"deepseek-v4-flash","input":[{"role":"user","content":[{"type":"input_image","file_id":"file_unsupported"}]}],"stream":false}'
 code=$(post /v1/responses "$unsupported" "$TMP/unsupported.out")
 [[ "$code" == "422" ]] || { echo "unsupported image source HTTP $code, want 422" >&2; exit 1; }
-[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 10))" ]] || { echo "upstream called for unsupported image" >&2; exit 1; }
+[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 11))" ]] || { echo "upstream called for unsupported image" >&2; exit 1; }
 
 unsupported_claude='{"model":"deepseek-v4-flash","max_tokens":64,"messages":[{"role":"user","content":[{"type":"image","source":{"type":"file","file_id":"file_unsupported"}}]}]}'
 code=$(post /v1/messages "$unsupported_claude" "$TMP/unsupported-claude.out")
 [[ "$code" == "422" ]] || { echo "unsupported Claude image source HTTP $code, want 422" >&2; exit 1; }
 grep -q 'invalid_request_error' "$TMP/unsupported-claude.out" || { echo "unsupported Claude error was not protocol native" >&2; exit 1; }
-[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 10))" ]] || { echo "upstream called for unsupported Claude image" >&2; exit 1; }
+[[ "$(state_json "http://127.0.0.1:$UPSTREAM_PORT" | count_role)" == "$((UPSTREAM_BEFORE + 11))" ]] || { echo "upstream called for unsupported Claude image" >&2; exit 1; }
 
 # A provider failure can put the host's VLM auth into cooldown. Subsequent
 # protocol checks may therefore fail before another mock VLM HTTP call. Capture
@@ -420,7 +527,7 @@ until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; pr
   sleep 0.2
 done
 disabled=$(make_request deepseek-v4-flash false disabled)
-assert_success disabled /v1/responses "$disabled" "$VLM_AFTER_FAILURES" "$((UPSTREAM_BEFORE + 11))"
+assert_success disabled /v1/responses "$disabled" "$VLM_AFTER_FAILURES" "$((UPSTREAM_BEFORE + 12))"
 mgmt -X PATCH -H 'Content-Type: application/json' -d '{"enabled":true}' "$BASE/v0/management/plugins/deepseek-vision/enabled" >/dev/null
 deadline=$((SECONDS + 20))
 until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; print(next(x for x in json.load(sys.stdin)["plugins"] if x["id"]=="deepseek-vision")["effective_enabled"])')" == "True" ]]; do
@@ -428,7 +535,7 @@ until [[ "$(mgmt "$BASE/v0/management/plugins" | python3 -c 'import json,sys; pr
   sleep 0.2
 done
 reloaded=$(make_request deepseek-v4-flash false reloaded)
-assert_success reloaded /v1/responses "$reloaded" "$((VLM_AFTER_FAILURES + 1))" "$((UPSTREAM_BEFORE + 12))"
+assert_success reloaded /v1/responses "$reloaded" "$((VLM_AFTER_FAILURES + 1))" "$((UPSTREAM_BEFORE + 13))"
 
 if grep -E 'fixture-vlm-key|upstream-key|data:image/' "$TMP/host.log" >/dev/null 2>&1; then
   echo "sensitive credential or image reference leaked to host log" >&2
@@ -436,5 +543,5 @@ if grep -E 'fixture-vlm-key|upstream-key|data:image/' "$TMP/host.log" >/dev/null
 fi
 
 echo "host process/dynamic-loader E2E passed"
-echo "covered: registration, effective status, store/cache metadata, Responses/Chat/Claude routes, cache hit, direct/alias/stream, content/tool-result/multi-image rewrite, compact/non-target/no-image bypass, protocol-native VLM fail-closed 502, unsupported 422, disable/re-enable reload, log redaction"
+echo "covered: registration, effective status, store/cache metadata, Responses/Chat/Claude routes, cache hit, direct/alias/stream, view_image/dedicated rich tool-output reanalysis, content/tool-result/multi-image rewrite, compact/non-target/no-image bypass, protocol-native structured VLM fail-closed 502, unsupported 422, disable/re-enable reload, log redaction"
 echo "bounded gaps: management delete/unload and 413 oversized callback are not asserted; host management delete removes the fixture library and cannot be safely restored within one process run"

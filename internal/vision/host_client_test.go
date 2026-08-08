@@ -101,7 +101,77 @@ func TestHostClientExposes413ForAdaptiveSplitting(t *testing.T) {
 	}
 }
 
+func TestHostClientTraceSeparatesAdaptiveSplitBatches(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "trace")
+	sink := tracelog.New(tracelog.Options{Root: root, MaxTotalBytes: 1 << 20, MaxEventBytes: 1 << 20})
+	sink.Configure(true)
+	session := sink.Start(tracelog.RequestMeta{RequestID: "split-trace"})
+	if session == nil {
+		t.Fatal("trace session is nil")
+	}
+	ctx := tracelog.WithSession(context.Background(), session)
+	ctx = tracelog.WithJob(ctx, tracelog.Job{ID: 5, ImageNumbers: []int{1, 2}, Attempt: 1})
+
+	client, err := NewHostClient(HostOptions{Model: "split-model", Execute: func(_ context.Context, request pluginapi.HostModelExecutionRequest, _ string) (pluginapi.HostModelExecutionResponse, error) {
+		var payload requestPayload
+		if err := json.Unmarshal(request.Body, &payload); err != nil {
+			t.Fatal(err)
+		}
+		images := 0
+		for _, content := range payload.Input[0].Content {
+			if content.Type == "input_image" {
+				images++
+			}
+		}
+		if images > 1 {
+			return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusRequestEntityTooLarge, Body: []byte(`{"error":"split required"}`)}, nil
+		}
+		return pluginapi.HostModelExecutionResponse{StatusCode: http.StatusOK, Body: []byte(`{"output_text":"single result"}`)}, nil
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	images := []ImageInput{{Number: 1, Reference: "https://example.com/1.png"}, {Number: 2, Reference: "https://example.com/2.png"}}
+	if _, err := client.AnalyzeBatch(ctx, images, "split"); !IsPayloadTooLarge(err) {
+		t.Fatalf("multi-image error = %v", err)
+	}
+	for i := range images {
+		if _, err := client.AnalyzeBatch(ctx, images[i:i+1], "split"); err != nil {
+			t.Fatalf("single image %d: %v", i+1, err)
+		}
+	}
+	session.Close()
+	sink.Close()
+
+	entries, err := os.ReadDir(filepath.Join(root, "requests"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("bundles=%v err=%v", entries, err)
+	}
+	bundle := filepath.Join(root, "requests", entries[0].Name())
+	checks := map[string]string{
+		"40-vlm-job-005-attempt-01-images-1-2-response.json":   "split required",
+		"40-vlm-job-005-attempt-01-images-1-parsed-result.txt": "single result",
+		"40-vlm-job-005-attempt-01-images-2-parsed-result.txt": "single result",
+	}
+	for name, fragment := range checks {
+		raw, readErr := os.ReadFile(filepath.Join(bundle, name))
+		if readErr != nil || !strings.Contains(string(raw), fragment) {
+			t.Fatalf("artifact %s: err=%v body=%s", name, readErr, raw)
+		}
+	}
+}
+
 func TestHostClientRetriesWithoutReasoningAfter400(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "trace")
+	sink := tracelog.New(tracelog.Options{Root: root, MaxTotalBytes: 1 << 20, MaxEventBytes: 1 << 20})
+	sink.Configure(true)
+	session := sink.Start(tracelog.RequestMeta{RequestID: "reasoning-compat"})
+	if session == nil {
+		t.Fatal("trace session is nil")
+	}
+	ctx := tracelog.WithSession(context.Background(), session)
+	ctx = tracelog.WithJob(ctx, tracelog.Job{ID: 3, ImageNumbers: []int{1}, Attempt: 1})
+
 	calls := 0
 	client, err := NewHostClient(HostOptions{Model: "compat-model", Execute: func(_ context.Context, request pluginapi.HostModelExecutionRequest, _ string) (pluginapi.HostModelExecutionResponse, error) {
 		calls++
@@ -123,9 +193,40 @@ func TestHostClientRetriesWithoutReasoningAfter400(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	result, err := client.Analyze(context.Background(), "https://example.com/image.png", "describe")
+	result, err := client.Analyze(ctx, "https://example.com/image.png", "describe")
 	if err != nil || result != "compatible" || calls != 2 {
 		t.Fatalf("result=%q calls=%d err=%v", result, calls, err)
+	}
+	session.Close()
+	sink.Close()
+
+	entries, err := os.ReadDir(filepath.Join(root, "requests"))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("bundles=%v err=%v", entries, err)
+	}
+	bundle := filepath.Join(root, "requests", entries[0].Name())
+	prefix := "40-vlm-job-003-attempt-01-images-1"
+	checks := map[string][]string{
+		prefix + "-request.json":                     {`"reasoning":{"effort":"low"}`},
+		prefix + "-reasoning-rejected-response.json": {"unsupported optional field"},
+		prefix + "-reasoning-fallback-request.json":  {`"model":"compat-model"`},
+		prefix + "-response.json":                    {"compatible"},
+		prefix + "-parsed-result.txt":                {"compatible"},
+	}
+	for name, fragments := range checks {
+		raw, readErr := os.ReadFile(filepath.Join(bundle, name))
+		if readErr != nil {
+			t.Fatalf("read %s: %v", name, readErr)
+		}
+		for _, fragment := range fragments {
+			if !strings.Contains(string(raw), fragment) {
+				t.Fatalf("%s missing %q: %s", name, fragment, raw)
+			}
+		}
+	}
+	fallbackRequest, err := os.ReadFile(filepath.Join(bundle, prefix+"-reasoning-fallback-request.json"))
+	if err != nil || strings.Contains(string(fallbackRequest), `"reasoning"`) {
+		t.Fatalf("reasoning compatibility trace retained rejected field: err=%v body=%s", err, fallbackRequest)
 	}
 }
 
@@ -202,10 +303,10 @@ func TestHostClientWritesFullPlaintextTrace(t *testing.T) {
 	}
 	bundle := filepath.Join(root, "requests", entries[0].Name())
 	checks := map[string][]string{
-		"40-vlm-job-001-images-1-metadata.json":     {"data:image/png;base64,PLAINTEXT", "full focus hint"},
-		"40-vlm-job-001-images-1-request.json":      {"data:image/png;base64,PLAINTEXT"},
-		"40-vlm-job-001-images-1-response.json":     {"plaintext response"},
-		"40-vlm-job-001-images-1-parsed-result.txt": {"plaintext response"},
+		"40-vlm-job-001-attempt-01-images-1-metadata.json":     {"data:image/png;base64,PLAINTEXT", "full focus hint"},
+		"40-vlm-job-001-attempt-01-images-1-request.json":      {"data:image/png;base64,PLAINTEXT"},
+		"40-vlm-job-001-attempt-01-images-1-response.json":     {"plaintext response"},
+		"40-vlm-job-001-attempt-01-images-1-parsed-result.txt": {"plaintext response"},
 	}
 	for name, fragments := range checks {
 		raw, readErr := os.ReadFile(filepath.Join(bundle, name))
@@ -218,7 +319,7 @@ func TestHostClientWritesFullPlaintextTrace(t *testing.T) {
 			}
 		}
 	}
-	responseMetadata, err := os.ReadFile(filepath.Join(bundle, "40-vlm-job-001-images-1-response-metadata.json"))
+	responseMetadata, err := os.ReadFile(filepath.Join(bundle, "40-vlm-job-001-attempt-01-images-1-response-metadata.json"))
 	if err != nil || strings.Contains(string(responseMetadata), "provider-secret") || strings.Contains(string(responseMetadata), "header-api-key") || !strings.Contains(string(responseMetadata), "[REDACTED]") {
 		t.Fatalf("response metadata redaction failed: err=%v body=%s", err, responseMetadata)
 	}

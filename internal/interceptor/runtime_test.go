@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -642,6 +643,165 @@ func TestHandleAllowsCacheToBeDisabled(t *testing.T) {
 	if calls != 2 {
 		t.Fatalf("analyzer calls=%d, disabled cache reused a result", calls)
 	}
+}
+
+func TestHandleAgentRefreshIdempotencyAndNoStore(t *testing.T) {
+	analyzer := &batchTestAnalyzer{}
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil })
+	cfg := testConfig(t)
+	cfg.AgentReanalysisEnabled = true
+	r.Reconfigure(cfg)
+	defer r.Shutdown()
+
+	ordinary := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", `{"input":[{"role":"user","content":[{"type":"input_text","text":"same focus"},{"type":"input_image","image_url":"https://example.com/shared.png"}]}]}`)
+	if resp, err := r.Handle(ordinary); err != nil || resp.Terminate {
+		t.Fatalf("ordinary response=%#v err=%v", resp, err)
+	}
+	refresh := func(callID, cache, reference string) pluginapi.RequestInterceptRequest {
+		args := `{"path":"/home/demo/.codex/attachments/att_1/shot.png"}`
+		name := "view_image"
+		if cache != "refresh" {
+			name = "deepseek_vision_reanalyze"
+			args = `{"attachment_ids":["att_1"],"focus":"same focus","cache":"` + cache + `"}`
+		}
+		body := `{"tools":[{"type":"function","name":"` + name + `"}],"input":[` +
+			`{"role":"user","content":[{"type":"input_text","text":"same focus"}]},` +
+			`{"type":"function_call","name":"` + name + `","call_id":"` + callID + `","arguments":` + strconv.Quote(args) + `},` +
+			`{"type":"function_call_output","call_id":"` + callID + `","output":[{"type":"input_image","image_url":"` + reference + `"}]}` +
+			`]}`
+		return makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
+	}
+
+	for _, request := range []pluginapi.RequestInterceptRequest{
+		refresh("call_1", "refresh", "https://example.com/shared.png"),
+		refresh("call_1", "refresh", "https://example.com/shared.png"),
+		refresh("call_2", "refresh", "https://example.com/shared.png"),
+	} {
+		if resp, err := r.Handle(request); err != nil || resp.Terminate {
+			t.Fatalf("refresh response=%#v err=%v", resp, err)
+		}
+	}
+	if resp, err := r.Handle(ordinary); err != nil || resp.Terminate {
+		t.Fatalf("post-refresh ordinary response=%#v err=%v", resp, err)
+	}
+
+	noStoreReference := "https://example.com/no-store.png"
+	noStore := refresh("call_ns", "no_store", noStoreReference)
+	for i := 0; i < 2; i++ {
+		if resp, err := r.Handle(noStore); err != nil || resp.Terminate {
+			t.Fatalf("no-store response=%#v err=%v", resp, err)
+		}
+	}
+	ordinaryAfterNoStore := makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", `{"input":[{"role":"user","content":[{"type":"input_text","text":"same focus"},{"type":"input_image","image_url":"`+noStoreReference+`"}]}]}`)
+	if resp, err := r.Handle(ordinaryAfterNoStore); err != nil || resp.Terminate {
+		t.Fatalf("ordinary after no-store response=%#v err=%v", resp, err)
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.batches)
+	analyzer.mu.Unlock()
+	if calls != 6 {
+		t.Fatalf("analyzer calls=%d, want ordinary + two refresh IDs + two no-store + uncached ordinary", calls)
+	}
+
+	conflict := refresh("call_1", "refresh", "https://example.com/changed.png")
+	resp, err := r.Handle(conflict)
+	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("call-ID conflict response=%#v err=%v", resp, err)
+	}
+
+	r.Reconfigure(cfg)
+	if resp, err := r.Handle(refresh("call_1", "refresh", "https://example.com/shared.png")); err != nil || resp.Terminate {
+		t.Fatalf("post-reconfigure response=%#v err=%v", resp, err)
+	}
+	analyzer.mu.Lock()
+	calls = len(analyzer.batches)
+	analyzer.mu.Unlock()
+	if calls != 7 {
+		t.Fatalf("post-reconfigure calls=%d, want both caches reset", calls)
+	}
+
+	cfg.AnalysisCacheSize = 0
+	r.Reconfigure(cfg)
+	for i := 0; i < 2; i++ {
+		if resp, err := r.Handle(refresh("call_disabled_cache", "refresh", "https://example.com/shared.png")); err != nil || resp.Terminate {
+			t.Fatalf("disabled ordinary cache refresh response=%#v err=%v", resp, err)
+		}
+	}
+	analyzer.mu.Lock()
+	calls = len(analyzer.batches)
+	analyzer.mu.Unlock()
+	if calls != 8 {
+		t.Fatalf("calls=%d, refresh idempotency should remain when ordinary cache is disabled", calls)
+	}
+}
+
+func TestHandleConcurrentRefreshIsSingleFlightAndRejectsConflict(t *testing.T) {
+	started := make(chan struct{}, 3)
+	block := make(chan struct{})
+	analyzer := &batchTestAnalyzer{started: started, block: block}
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return analyzer, nil })
+	cfg := testConfig(t)
+	cfg.AgentReanalysisEnabled = true
+	r.Reconfigure(cfg)
+	defer r.Shutdown()
+
+	request := makeAgentRefreshRequest("call_concurrent", "https://example.com/a.png")
+	type outcome struct {
+		resp pluginapi.RequestInterceptResponse
+		err  error
+	}
+	first := make(chan outcome, 1)
+	second := make(chan outcome, 1)
+	go func() {
+		resp, err := r.Handle(request)
+		first <- outcome{resp: resp, err: err}
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first refresh did not start")
+	}
+	go func() {
+		resp, err := r.Handle(request)
+		second <- outcome{resp: resp, err: err}
+	}()
+	select {
+	case <-started:
+		t.Fatal("identical concurrent refresh started a second VLM call")
+	case <-time.After(30 * time.Millisecond):
+	}
+
+	conflict, err := r.Handle(makeAgentRefreshRequest("call_concurrent", "https://example.com/b.png"))
+	if err != nil || !conflict.Terminate || conflict.StatusCode != http.StatusBadRequest {
+		t.Fatalf("conflict response=%#v err=%v", conflict, err)
+	}
+	close(block)
+	for index, ch := range []chan outcome{first, second} {
+		select {
+		case got := <-ch:
+			if got.err != nil || got.resp.Terminate {
+				t.Fatalf("response %d=%#v err=%v", index, got.resp, got.err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("response %d did not complete", index)
+		}
+	}
+	analyzer.mu.Lock()
+	calls := len(analyzer.batches)
+	analyzer.mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("VLM calls=%d, want one", calls)
+	}
+}
+
+func makeAgentRefreshRequest(callID, reference string) pluginapi.RequestInterceptRequest {
+	arguments := `{"path":"/home/demo/.codex/attachments/att_1/shot.png"}`
+	body := `{"tools":[{"type":"function","name":"view_image"}],"input":[` +
+		`{"role":"user","content":[{"type":"input_text","text":"same focus"}]},` +
+		`{"type":"function_call","name":"view_image","call_id":"` + callID + `","arguments":` + strconv.Quote(arguments) + `},` +
+		`{"type":"function_call_output","call_id":"` + callID + `","output":[{"type":"input_image","image_url":"` + reference + `"}]}` +
+		`]}`
+	return makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body)
 }
 
 func TestHandleGateUsesFinalModelAndExactPath(t *testing.T) {

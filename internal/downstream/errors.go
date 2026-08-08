@@ -37,10 +37,11 @@ const (
 	ErrorInvalidResult          ErrorKind = "invalid_result"
 	ErrorRewriteVerification    ErrorKind = "rewrite_verification"
 
-	LimitRequestBody    LimitKind = "request_body"
-	LimitImageReference LimitKind = "image_reference"
-	LimitImageCount     LimitKind = "image_count"
-	LimitVLMResult      LimitKind = "vlm_result"
+	LimitRequestBody     LimitKind = "request_body"
+	LimitImageReference  LimitKind = "image_reference"
+	LimitImageCount      LimitKind = "image_count"
+	LimitVLMResult       LimitKind = "vlm_result"
+	LimitReanalysisCount LimitKind = "reanalysis_count"
 )
 
 // Error is a typed planner error. StatusCode is the HTTP status that should be

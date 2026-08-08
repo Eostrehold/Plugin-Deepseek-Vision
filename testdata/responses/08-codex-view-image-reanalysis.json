@@ -1,0 +1,39 @@
+{
+  "model": "deepseek-v4-flash",
+  "tools": [
+    {
+      "type": "function",
+      "name": "view_image",
+      "description": "Open an Agent-owned attachment preview"
+    }
+  ],
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "input_text",
+          "text": "# Files mentioned by the user:\n\n## preview.png: /home/example/.codex/attachments/att_fixture/preview.png\n\nPlease re-check only alignment, overflow, and abnormal whitespace."
+        }
+      ]
+    },
+    {
+      "type": "function_call",
+      "name": "view_image",
+      "call_id": "call_fixture",
+      "arguments": "{\"path\":\"/home/example/.codex/attachments/att_fixture/preview.png\",\"detail\":\"high\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_fixture",
+      "output": [
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,AAECAw==",
+          "detail": "high"
+        }
+      ]
+    }
+  ],
+  "stream": true
+}

@@ -24,8 +24,50 @@ func TestParseDefaults(t *testing.T) {
 	if cfg.TraceEnabled {
 		t.Fatal("full-context trace must default to disabled")
 	}
+	if cfg.AgentReanalysisEnabled || len(cfg.VisionFallbackModels) != 0 {
+		t.Fatalf("new feature defaults = %#v", cfg)
+	}
 	if len(cfg.TargetModels) != 1 || cfg.TargetModels[0] != "deepseek-v4-flash" {
 		t.Fatalf("target models = %#v", cfg.TargetModels)
+	}
+}
+
+func TestVisionFallbackModelsAndAgentReanalysisConfiguration(t *testing.T) {
+	cfg, err := ParseYAML([]byte(`
+vision_model: primary
+vision_fallback_models: [" fallback-a ", fallback-b]
+agent_reanalysis_enabled: true
+`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"primary", "fallback-a", "fallback-b"}
+	models := cfg.VisionModels()
+	if strings.Join(models, ",") != strings.Join(want, ",") || !cfg.AgentReanalysisEnabled {
+		t.Fatalf("config=%#v models=%#v", cfg, models)
+	}
+	models[0] = "mutated"
+	if cfg.VisionModel != "primary" {
+		t.Fatal("VisionModels exposed mutable config storage")
+	}
+	if err := PublishValidated(cfg); err != nil {
+		t.Fatal(err)
+	}
+	cfg.VisionFallbackModels[0] = "mutated"
+	if got := Snapshot().VisionFallbackModels[0]; got != "fallback-a" {
+		t.Fatalf("published fallback slice was not cloned: %q", got)
+	}
+
+	invalid := []string{
+		"vision_model: primary\nvision_fallback_models: [primary]",
+		"vision_fallback_models: [a, ' a ']",
+		"vision_fallback_models: ['']",
+		"vision_fallback_models: [a, b, c, d]",
+	}
+	for _, raw := range invalid {
+		if _, err := ParseYAML([]byte(raw)); err == nil {
+			t.Errorf("invalid fallback config accepted: %s", raw)
+		}
 	}
 }
 

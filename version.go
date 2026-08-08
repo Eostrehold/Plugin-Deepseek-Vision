@@ -4,4 +4,4 @@ const pluginName = "deepseek-vision"
 
 // pluginVersion is a variable so release builds can override it with
 // -ldflags "-X main.pluginVersion=<version>".
-var pluginVersion = "0.2.0"
+var pluginVersion = "0.3.0"

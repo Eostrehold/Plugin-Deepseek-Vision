@@ -28,12 +28,13 @@ func DiscoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 }
 
 type claudePlan struct {
-	original   []byte
-	root       any
-	options    Options
-	images     []Image
-	groups     []claudePromptGroup
-	inputItems int
+	original                  []byte
+	root                      any
+	options                   Options
+	images                    []Image
+	groups                    []claudePromptGroup
+	inputItems                int
+	allowCodexAttachmentPaths bool
 }
 
 // claudePromptGroup carries the protocol-specific path in addition to the
@@ -321,6 +322,17 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 	if len(uniqueReferences) > opt.MaxImages {
 		return nil, imageCountExceeded(len(uniqueReferences), opt.MaxImages, summarizeClaudeImages(plan.images, plan.inputItems), plan.images)
 	}
+	allowPaths, err := annotateClaudeReanalysis(object, plan.groups, opt)
+	if err != nil {
+		return nil, err
+	}
+	plan.allowCodexAttachmentPaths = allowPaths
+	for i := range plan.groups {
+		plan.groups[i].Prompt = sanitizeAttachmentText(plan.groups[i].Prompt, false)
+		if plan.groups[i].Tool != nil {
+			plan.groups[i].Tool.Focus = plan.groups[i].Prompt
+		}
+	}
 	return plan, nil
 }
 
@@ -483,6 +495,10 @@ func (p *claudePlan) Groups() []PromptGroup {
 	groups := make([]PromptGroup, len(p.groups))
 	for i := range p.groups {
 		groups[i] = p.groups[i].PromptGroup
+		if p.groups[i].Tool != nil {
+			tool := *p.groups[i].Tool
+			groups[i].Tool = &tool
+		}
 		groups[i].locationKind = 0
 		groups[i].Images = append([]Image(nil), p.groups[i].Images...)
 		for j := range groups[i].Images {
@@ -544,6 +560,8 @@ func (p *claudePlan) RewriteGroupsText(results []string) ([]byte, error) {
 			return nil, err
 		}
 	}
+	redactAnalyzedAttachmentPaths(root, attachmentPathsToRedact(root, p.allowCodexAttachmentPaths))
+	sanitizeAttachmentTree(root, p.allowCodexAttachmentPaths)
 
 	body, err := json.Marshal(root)
 	if err != nil {
@@ -676,7 +694,7 @@ func rewriteClaudeGroup(blocks []any, group claudePromptGroup, analysis string) 
 		}
 		marker := map[string]any{
 			"type": "text",
-			"text": fmt.Sprintf("[Image %d — already analyzed; the target model cannot read this attachment directly. Use the joint visual analysis below and do not call view_image for it.]", imageIndex+1),
+			"text": imageReplacementMarker(group.PromptGroup, imageIndex+1),
 		}
 		if cacheControl, exists := block["cache_control"]; exists {
 			marker["cache_control"] = cacheControl

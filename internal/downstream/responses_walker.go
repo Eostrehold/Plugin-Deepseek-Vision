@@ -28,11 +28,12 @@ const (
 // uses conservative defaults. MaxFocusChars is a character (rune) limit;
 // byte limits are measured in bytes of the UTF-8 request/reference.
 type Options struct {
-	MaxImages         int
-	MaxReferenceBytes int
-	MaxBodyBytes      int
-	MaxFocusChars     int
-	MaxResultChars    int
+	MaxImages              int
+	MaxReferenceBytes      int
+	MaxBodyBytes           int
+	MaxFocusChars          int
+	MaxResultChars         int
+	AgentReanalysisEnabled bool
 }
 
 func (o Options) normalized() Options {
@@ -73,11 +74,13 @@ type Image struct {
 // same Responses content/output item stay together so the model can preserve
 // comparisons and relationships expressed by one prompt.
 type PromptGroup struct {
-	ID         int     `json:"id"`
-	InputIndex int     `json:"input_index"`
-	Source     string  `json:"source"`
-	Prompt     string  `json:"prompt"`
-	Images     []Image `json:"images"`
+	ID                   int          `json:"id"`
+	InputIndex           int          `json:"input_index"`
+	Source               string       `json:"source"`
+	Prompt               string       `json:"prompt"`
+	Images               []Image      `json:"images"`
+	Tool                 *ToolContext `json:"tool,omitempty"`
+	AllowAgentReanalysis bool         `json:"allow_agent_reanalysis,omitempty"`
 
 	locationKind locationKind
 }
@@ -118,12 +121,13 @@ type ImageResult struct {
 // Plan is an immutable discovery result. A Plan may be rewritten repeatedly;
 // each call works on a fresh JSON tree and never mutates the original body.
 type responsesPlan struct {
-	original   []byte
-	root       any
-	images     []Image
-	groups     []PromptGroup
-	options    Options
-	inputItems int
+	original                  []byte
+	root                      any
+	images                    []Image
+	groups                    []PromptGroup
+	options                   Options
+	inputItems                int
+	allowCodexAttachmentPaths bool
 }
 
 func (*responsesPlan) Protocol() Protocol { return ProtocolResponses }
@@ -279,6 +283,12 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 		}
 		plan.groups[groupIndex].Images = append(plan.groups[groupIndex].Images, image)
 	}
+	allowPaths, err := annotateResponsesReanalysis(object, plan.groups, opt)
+	if err != nil {
+		return nil, err
+	}
+	plan.allowCodexAttachmentPaths = allowPaths
+	sanitizeGroupPrompts(plan.groups)
 	return plan, nil
 }
 
@@ -482,6 +492,10 @@ func (p *responsesPlan) Groups() []PromptGroup {
 	groups := make([]PromptGroup, len(p.groups))
 	for i := range p.groups {
 		groups[i] = p.groups[i]
+		if p.groups[i].Tool != nil {
+			tool := *p.groups[i].Tool
+			groups[i].Tool = &tool
+		}
 		groups[i].locationKind = 0
 		groups[i].Images = append([]Image(nil), p.groups[i].Images...)
 		for j := range groups[i].Images {

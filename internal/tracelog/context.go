@@ -8,6 +8,7 @@ type jobContextKey struct{}
 type Job struct {
 	ID           int
 	ImageNumbers []int
+	Attempt      int
 }
 
 func WithSession(ctx context.Context, session *Session) context.Context {

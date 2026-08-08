@@ -18,6 +18,7 @@ var (
 	ErrInvalidResponse         = errors.New("invalid visual model response")
 	ErrEmptyResponse           = errors.New("visual model returned empty response")
 	ErrResponseTooLarge        = errors.New("visual model response exceeds size limit")
+	ErrResultTooLarge          = errors.New("visual model result exceeds character limit")
 	ErrEmptyImageBatch         = errors.New("visual model image batch is empty")
 )
 
@@ -98,7 +99,11 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	}
 	session := tracelog.FromContext(ctx)
 	job := tracelog.JobFromContext(ctx)
-	prefix := fmt.Sprintf("40-vlm-job-%03d-images-%s", job.ID, imageNumberToken(images))
+	attempt := job.Attempt
+	if attempt < 1 {
+		attempt = 1
+	}
+	prefix := fmt.Sprintf("40-vlm-job-%03d-attempt-%02d-images-%s", job.ID, attempt, imageNumberToken(images))
 	referenceBytes := 0
 	imageNumbers := make([]int, len(images))
 	for i := range images {
@@ -107,7 +112,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	}
 	if session != nil {
 		session.JSON(prefix+"-metadata.json", map[string]any{
-			"job_id": job.ID, "image_numbers": imageNumbers,
+			"job_id": job.ID, "attempt": attempt, "image_numbers": imageNumbers,
 			"images": images, "reference_bytes": referenceBytes,
 			"prompt_context": promptContext, "vision_model": c.opts.Model, "language": c.opts.Language,
 		})
@@ -133,7 +138,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if session != nil {
 		session.Artifact(prefix+"-request.json", body)
 		session.Event("vlm_call_started", map[string]any{
-			"job_id": job.ID, "image_numbers": imageNumbers,
+			"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "image_numbers": imageNumbers,
 			"request_bytes": len(body), "reference_bytes": referenceBytes, "image_count": len(images),
 		})
 	}
@@ -147,6 +152,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	}
 	if session != nil {
 		session.JSON(prefix+"-request-metadata.json", map[string]any{
+			"job_id": job.ID, "attempt": attempt,
 			"entry_protocol": hostRequest.EntryProtocol, "exit_protocol": hostRequest.ExitProtocol,
 			"model": hostRequest.Model, "stream": hostRequest.Stream,
 			"headers": tracelog.RedactHeaders(hostRequest.Headers), "query": tracelog.RedactValues(hostRequest.Query), "alt": hostRequest.Alt,
@@ -157,7 +163,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 		if session != nil {
 			session.Artifact(prefix+"-reasoning-rejected-response.json", response.Body)
 			session.Event("vlm_reasoning_fallback", map[string]any{
-				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 				"status_code": response.StatusCode,
 			})
 		}
@@ -175,7 +181,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if err != nil {
 		if session != nil {
 			session.Event("vlm_call_finished", map[string]any{
-				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 				"outcome": "executor_error", "error": err.Error(),
 			})
 		}
@@ -184,14 +190,24 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if session != nil {
 		session.Artifact(prefix+"-response.json", response.Body)
 		session.JSON(prefix+"-response-metadata.json", map[string]any{
+			"job_id": job.ID, "attempt": attempt, "model": c.opts.Model,
 			"status_code": response.StatusCode, "headers": tracelog.RedactHeaders(response.Headers),
 			"body_bytes": len(response.Body), "duration_ms": time.Since(started).Milliseconds(),
 		})
 	}
+	if response.StatusCode < 100 || response.StatusCode > 599 {
+		if session != nil {
+			session.Event("vlm_call_finished", map[string]any{
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
+				"outcome": "invalid_status",
+			})
+		}
+		return "", ErrInvalidResponse
+	}
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
 		if session != nil {
 			session.Event("vlm_call_finished", map[string]any{
-				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 				"outcome": "http_error", "status_code": response.StatusCode,
 			})
 		}
@@ -200,7 +216,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if int64(len(response.Body)) > c.opts.MaxResponseBytes {
 		if session != nil {
 			session.Event("vlm_call_finished", map[string]any{
-				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 				"outcome": "response_too_large", "response_bytes": len(response.Body),
 			})
 		}
@@ -210,7 +226,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if err != nil {
 		if session != nil {
 			session.Event("vlm_call_finished", map[string]any{
-				"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+				"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 				"outcome": "parse_error", "error": err.Error(),
 			})
 		}
@@ -219,7 +235,7 @@ func (c *HostClient) AnalyzeBatch(ctx context.Context, images []ImageInput, prom
 	if session != nil {
 		session.Artifact(prefix+"-parsed-result.txt", []byte(text))
 		session.Event("vlm_call_finished", map[string]any{
-			"job_id": job.ID, "duration_ms": time.Since(started).Milliseconds(),
+			"job_id": job.ID, "attempt": attempt, "model": c.opts.Model, "duration_ms": time.Since(started).Milliseconds(),
 			"outcome": "success", "response_bytes": len(response.Body), "result_chars": len([]rune(text)),
 		})
 	}

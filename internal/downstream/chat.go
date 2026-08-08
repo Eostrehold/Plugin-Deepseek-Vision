@@ -30,12 +30,13 @@ func DiscoverChat(body []byte, options ...Options) (*chatPlan, error) {
 }
 
 type chatPlan struct {
-	original   []byte
-	root       any
-	images     []Image
-	groups     []PromptGroup
-	options    Options
-	inputItems int
+	original                  []byte
+	root                      any
+	images                    []Image
+	groups                    []PromptGroup
+	options                   Options
+	inputItems                int
+	allowCodexAttachmentPaths bool
 }
 
 func (*chatPlan) Protocol() Protocol { return ProtocolChat }
@@ -231,6 +232,12 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 			}
 		}
 	}
+	allowPaths, err := annotateChatReanalysis(object, plan.groups, opt)
+	if err != nil {
+		return nil, err
+	}
+	plan.allowCodexAttachmentPaths = allowPaths
+	sanitizeGroupPrompts(plan.groups)
 	return plan, nil
 }
 
@@ -327,6 +334,10 @@ func (p *chatPlan) Groups() []PromptGroup {
 	groups := make([]PromptGroup, len(p.groups))
 	for i := range p.groups {
 		groups[i] = p.groups[i]
+		if p.groups[i].Tool != nil {
+			tool := *p.groups[i].Tool
+			groups[i].Tool = &tool
+		}
 		groups[i].locationKind = 0
 		groups[i].Images = append([]Image(nil), p.groups[i].Images...)
 		for j := range groups[i].Images {
@@ -411,7 +422,7 @@ func (p *chatPlan) RewriteGroupsText(results []string) ([]byte, error) {
 			localNumber++
 			content[blockIndex] = map[string]any{
 				"type": "text",
-				"text": fmt.Sprintf("[Image %d — already analyzed; the target model cannot read this attachment directly. Use the joint visual analysis below and do not call view_image for it.]", localNumber),
+				"text": imageReplacementMarker(result.group, localNumber),
 			}
 			replaced++
 		}
@@ -427,6 +438,8 @@ func (p *chatPlan) RewriteGroupsText(results []string) ([]byte, error) {
 	if replaced != len(p.images) {
 		return nil, plannerError(ErrorRewriteVerification, 500, "not all discovered images were rewritten", "messages")
 	}
+	redactAnalyzedAttachmentPaths(root, attachmentPathsToRedact(root, p.allowCodexAttachmentPaths))
+	sanitizeAttachmentTree(root, p.allowCodexAttachmentPaths)
 	body, err := json.Marshal(root)
 	if err != nil {
 		return nil, plannerError(ErrorRewriteVerification, 500, "rewritten request could not be encoded", "body")
