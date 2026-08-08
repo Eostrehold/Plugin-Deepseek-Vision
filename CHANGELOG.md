@@ -42,6 +42,8 @@ Versioning, and release tags use the `vX.Y.Z` form.
 - Plaintext VLM trace artifacts include an attempt number, preserving every
   fallback model's request and response instead of overwriting earlier
   attempts within the same job.
+- The Management form exposes `target_models` as a JSON array alongside the
+  primary and fallback vision-model fields.
 
 ## [0.2.0] - 2026-08-05
 

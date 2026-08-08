@@ -196,7 +196,8 @@ assert item["registered"] is True, item
 assert item["effective_enabled"] is True, item
 assert item["configured"] is True, item
 fields = {field["name"]: field["type"] for field in item["config_fields"]}
-assert len(fields) == 11, fields
+assert len(fields) == 12, fields
+assert fields["target_models"] == "array", fields
 assert fields["vision_model"] == "string", fields
 assert fields["vision_fallback_models"] == "array", fields
 assert fields["language"] == "enum", fields
@@ -220,6 +221,7 @@ assert payload.get("analysis_cache_ttl_seconds") == 60, payload
 assert payload.get("analysis_url_cache_ttl_seconds") == 30, payload
 assert payload.get("max_inflight_vision_requests") == 4, payload
 assert payload.get("emergency_max_images_per_request") == 256, payload
+assert payload.get("target_models") == ["deepseek-v4-flash"], payload
 assert payload.get("vision_fallback_models") == [], payload
 assert payload.get("agent_reanalysis_enabled") is True, payload
 PY
@@ -316,6 +318,16 @@ assert "image_url" not in raw, raw[:1000]
 assert '"type": "image"' not in raw, raw[:1000]
 assert "data:image/" not in raw, raw[:1000]
 assert "Visual analysis" in raw or "Visible text" in raw, raw[:1000]
+PY
+}
+
+assert_last_upstream_has_image() {
+  python3 - "$UPSTREAM_STATE" <<'PY'
+import json, sys
+state = json.load(open(sys.argv[1], encoding="utf-8"))
+body = state["requests"][-1].get("body") or {}
+raw = json.dumps(body, ensure_ascii=False)
+assert "data:image/" in raw or "input_image" in raw or "image_url" in raw, raw[:1000]
 PY
 }
 
@@ -537,11 +549,42 @@ done
 reloaded=$(make_request deepseek-v4-flash false reloaded)
 assert_success reloaded /v1/responses "$reloaded" "$((VLM_AFTER_FAILURES + 1))" "$((UPSTREAM_BEFORE + 13))"
 
+# Exercise the Management array field through persistence and runtime gating,
+# not just registration metadata. The former target must pass through with its
+# image intact, while the newly selected target must invoke vision rewriting.
+mgmt -X PATCH -H 'Content-Type: application/json' \
+  -d '{"target_models":["other-model"]}' \
+  "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
+deadline=$((SECONDS + 20))
+until mgmt "$BASE/v0/management/plugins/deepseek-vision/config" | python3 -c '
+import json,sys
+raise SystemExit(0 if json.load(sys.stdin).get("target_models") == ["other-model"] else 1)
+'; do
+  (( SECONDS < deadline )) || { echo "target_models config update did not settle" >&2; exit 1; }
+  sleep 0.2
+done
+
+old_target=$(make_request deepseek-v4-flash false old-target-bypass)
+assert_success old-target-bypass /v1/responses "$old_target" "$((VLM_AFTER_FAILURES + 1))" "$((UPSTREAM_BEFORE + 14))"
+assert_last_upstream_has_image
+
+new_target=$(make_request other-model false new-target-intercept)
+assert_success new-target-intercept /v1/responses "$new_target" "$((VLM_AFTER_FAILURES + 2))" "$((UPSTREAM_BEFORE + 15))"
+assert_last_upstream_rewritten
+
+mgmt -X PATCH -H 'Content-Type: application/json' \
+  -d '{"target_models":["deepseek-v4-flash"]}' \
+  "$BASE/v0/management/plugins/deepseek-vision/config" >/dev/null
+mgmt "$BASE/v0/management/plugins/deepseek-vision/config" | python3 -c '
+import json,sys
+assert json.load(sys.stdin).get("target_models") == ["deepseek-v4-flash"]
+'
+
 if grep -E 'fixture-vlm-key|upstream-key|data:image/' "$TMP/host.log" >/dev/null 2>&1; then
   echo "sensitive credential or image reference leaked to host log" >&2
   exit 1
 fi
 
 echo "host process/dynamic-loader E2E passed"
-echo "covered: registration, effective status, store/cache metadata, Responses/Chat/Claude routes, cache hit, direct/alias/stream, view_image/dedicated rich tool-output reanalysis, content/tool-result/multi-image rewrite, compact/non-target/no-image bypass, protocol-native structured VLM fail-closed 502, unsupported 422, disable/re-enable reload, log redaction"
+echo "covered: registration, effective status, store/cache metadata, Management target_models persistence/runtime gating, Responses/Chat/Claude routes, cache hit, direct/alias/stream, view_image/dedicated rich tool-output reanalysis, content/tool-result/multi-image rewrite, compact/non-target/no-image bypass, protocol-native structured VLM fail-closed 502, unsupported 422, disable/re-enable reload, log redaction"
 echo "bounded gaps: management delete/unload and 413 oversized callback are not asserted; host management delete removes the fixture library and cannot be safely restored within one process run"

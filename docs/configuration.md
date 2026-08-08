@@ -8,7 +8,7 @@ an invalid update leaves the previous snapshot active.
 | Field | Meaning | Default |
 | --- | --- | --- |
 | `enabled`, `priority` | Host-owned switches | host-defined |
-| `target_models` | Final upstream models eligible for interception | `deepseek-v4-flash` |
+| `target_models` | Final upstream models eligible for interception | `["deepseek-v4-flash"]` |
 | `vision_model` | VLM model identifier | `gpt-5.6-luna` |
 | `vision_fallback_models` | Ordered VLM candidates selected after `vision_model`; at most three, no duplicates | `[]` |
 | `language` | Preferred output language | `zh` |
@@ -48,12 +48,13 @@ recurse. No additional VLM endpoint or key, and no CLIProxyAPI server-side
 tool, is supported or required. CLIProxyAPI owns provider protocol
 translation, transport, retry, and credential policy.
 
-The CPAMC form exposes `vision_model`, ordered `vision_fallback_models`,
-`language`, global in-flight vision requests, the emergency image ceiling,
-total timeout, the three cache controls, `agent_reanalysis_enabled`, and a
-boolean `trace_enabled` switch. Their descriptions include bilingual
-defaults; key integer controls also state their validation ranges. Advanced
-size controls remain available through YAML.
+The CPAMC form exposes `target_models`, `vision_model`, ordered
+`vision_fallback_models`, `language`, global in-flight vision requests, the
+emergency image ceiling, total timeout, the three cache controls,
+`agent_reanalysis_enabled`, and a boolean `trace_enabled` switch. Array fields
+use JSON array syntax. Their descriptions include bilingual defaults; key
+integer controls also state their validation ranges. Advanced size controls
+remain available through YAML.
 
 ## Full-context debug trace
 

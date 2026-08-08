@@ -203,7 +203,7 @@ plugins/<GOOS>/<GOARCH>/deepseek-vision.<ext>
 
 | 配置项 | 默认值 | 说明 |
 | --- | ---: | --- |
-| `target_models` | `deepseek-v4-flash` | 需要视觉预处理的最终模型列表 |
+| `target_models` | `["deepseek-v4-flash"]` | 需要视觉预处理的最终模型列表 |
 | `vision_model` | `gpt-5.6-luna` | CLIProxyAPI 中已有的视觉模型名称 |
 | `vision_fallback_models` | `[]` | 插件在主模型失败后按顺序选择的视觉模型，最多 3 个；路由/凭据仍由 CLIProxyAPI 管理 |
 | `language` | `zh` | `zh`、`en` 或 `auto` |
