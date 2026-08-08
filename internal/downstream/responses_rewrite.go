@@ -10,9 +10,6 @@ import (
 
 const omittedImageReference = "[image reference omitted]"
 
-const downstreamVisionNotice = `[Vision preprocessing notice]
-The target model cannot inspect image attachments directly. The images in this prompt have already been analyzed by a vision model. Use the joint visual analysis below as their visual content. Do not call view_image or other image/file tools to reopen these already analyzed attachments.`
-
 type groupedRewriteResult struct {
 	group PromptGroup
 	text  string
@@ -118,6 +115,8 @@ func (p *responsesPlan) Rewrite(results []ImageResult) ([]byte, error) {
 	if replaced != len(p.images) {
 		return nil, plannerError(ErrorRewriteVerification, 500, "not all discovered images were rewritten", "input")
 	}
+	redactAnalyzedAttachmentPaths(root, attachmentPathsToRedact(root, p.allowCodexAttachmentPaths))
+	sanitizeAttachmentTree(root, p.allowCodexAttachmentPaths)
 
 	body, err := json.Marshal(root)
 	if err != nil {
@@ -181,7 +180,6 @@ func (p *responsesPlan) RewriteGroupsText(results []string) ([]byte, error) {
 		return nil, malformed("Responses request must be a JSON object", "body")
 	}
 	replaced := 0
-	var analyzedAttachmentPaths []string
 	if items, ok := object["input"].([]any); ok {
 		for inputIndex, item := range items {
 			itemObject, ok := item.(map[string]any)
@@ -189,23 +187,21 @@ func (p *responsesPlan) RewriteGroupsText(results []string) ([]byte, error) {
 				continue
 			}
 			if content, ok := itemObject["content"].([]any); ok {
-				updated, count, paths, rewriteErr := rewritePromptGroupBlocks(content, inputIndex, locationContent, byLocation)
+				updated, count, rewriteErr := rewritePromptGroupBlocks(content, inputIndex, locationContent, byLocation)
 				if rewriteErr != nil {
 					return nil, rewriteErr
 				}
 				itemObject["content"] = updated
 				replaced += count
-				analyzedAttachmentPaths = append(analyzedAttachmentPaths, paths...)
 			}
 			if itemType, _ := itemObject["type"].(string); itemType == "function_call_output" {
 				if output, ok := itemObject["output"].([]any); ok {
-					updated, count, paths, rewriteErr := rewritePromptGroupBlocks(output, inputIndex, locationFunctionOutput, byLocation)
+					updated, count, rewriteErr := rewritePromptGroupBlocks(output, inputIndex, locationFunctionOutput, byLocation)
 					if rewriteErr != nil {
 						return nil, rewriteErr
 					}
 					itemObject["output"] = updated
 					replaced += count
-					analyzedAttachmentPaths = append(analyzedAttachmentPaths, paths...)
 				}
 			}
 		}
@@ -213,7 +209,8 @@ func (p *responsesPlan) RewriteGroupsText(results []string) ([]byte, error) {
 	if replaced != len(p.images) {
 		return nil, plannerError(ErrorRewriteVerification, 500, "not all discovered images were rewritten", "input")
 	}
-	redactAnalyzedAttachmentPaths(root, analyzedAttachmentPaths)
+	redactAnalyzedAttachmentPaths(root, attachmentPathsToRedact(root, p.allowCodexAttachmentPaths))
+	sanitizeAttachmentTree(root, p.allowCodexAttachmentPaths)
 	body, err := json.Marshal(root)
 	if err != nil {
 		return nil, plannerError(ErrorRewriteVerification, 500, "rewritten request could not be encoded", "body")
@@ -225,13 +222,12 @@ func (p *responsesPlan) RewriteGroupsText(results []string) ([]byte, error) {
 	return body, nil
 }
 
-func rewritePromptGroupBlocks(blocks []any, inputIndex int, kind locationKind, results map[locationKey]groupedRewriteResult) ([]any, int, []string, error) {
+func rewritePromptGroupBlocks(blocks []any, inputIndex int, kind locationKind, results map[locationKey]groupedRewriteResult) ([]any, int, error) {
 	key := locationKey{kind: kind, input: inputIndex, block: -1}
 	result, hasGroup := results[key]
 	if !hasGroup {
-		return blocks, 0, nil, nil
+		return blocks, 0, nil
 	}
-	paths := sanitizeAnalyzedAttachmentMetadata(blocks)
 	imageIndex := 0
 	for blockIndex, block := range blocks {
 		blockObject, ok := block.(map[string]any)
@@ -242,22 +238,19 @@ func rewritePromptGroupBlocks(blocks []any, inputIndex int, kind locationKind, r
 			continue
 		}
 		if imageIndex >= len(result.group.Images) {
-			return nil, 0, nil, plannerError(ErrorRewriteVerification, 500, "prompt group image count changed before rewrite", locationPath(imageLocation{kind: kind, input: inputIndex, block: blockIndex}))
+			return nil, 0, plannerError(ErrorRewriteVerification, 500, "prompt group image count changed before rewrite", locationPath(imageLocation{kind: kind, input: inputIndex, block: blockIndex}))
 		}
-		blocks[blockIndex] = map[string]any{
-			"type": "input_text",
-			"text": fmt.Sprintf("[Image %d — already analyzed; the target model cannot read this attachment directly. Use the joint visual analysis below and do not call view_image for it.]", imageIndex+1),
-		}
+		blocks[blockIndex] = map[string]any{"type": "input_text", "text": imageReplacementMarker(result.group, imageIndex+1)}
 		imageIndex++
 	}
 	if imageIndex != len(result.group.Images) {
-		return nil, 0, nil, plannerError(ErrorRewriteVerification, 500, "prompt group image locations changed before rewrite", "input")
+		return nil, 0, plannerError(ErrorRewriteVerification, 500, "prompt group image locations changed before rewrite", "input")
 	}
 	blocks = append(blocks, map[string]any{
 		"type": "input_text",
 		"text": RenderGroupResult(result.group, result.text),
 	})
-	return blocks, imageIndex, paths, nil
+	return blocks, imageIndex, nil
 }
 
 func RenderGroupResult(group PromptGroup, text string) string {
@@ -265,60 +258,29 @@ func RenderGroupResult(group PromptGroup, text string) string {
 	for i := range group.Images {
 		numbers[i] = fmt.Sprintf("%d", i+1)
 	}
-	return fmt.Sprintf("%s\n\n[Images %s — Joint visual analysis]\n\n%s", downstreamVisionNotice, strings.Join(numbers, ", "), strings.TrimSpace(text))
+	if group.Tool != nil && group.Tool.Active {
+		return fmt.Sprintf("[Task-specific visual reanalysis from tool call %s]\nPrefer this analysis for the stated focus. Earlier analyses may still contain complementary details.\n\n[Images %s — Joint visual analysis]\n\n%s", group.Tool.CallID, strings.Join(numbers, ", "), strings.TrimSpace(text))
+	}
+	return fmt.Sprintf("%s\n\n[Images %s — Joint visual analysis]\n\n%s", downstreamVisionNotice(group), strings.Join(numbers, ", "), strings.TrimSpace(text))
 }
 
-func sanitizeAnalyzedAttachmentMetadata(blocks []any) []string {
-	var paths []string
-	for _, block := range blocks {
-		object, ok := block.(map[string]any)
-		if !ok {
-			continue
-		}
-		text, ok := object["text"].(string)
-		if !ok {
-			continue
-		}
-		match := codexImageWrapperPattern.FindStringSubmatch(strings.TrimSpace(text))
-		if len(match) == 2 && match[1] != "" {
-			backslashPath := strings.ReplaceAll(match[1], "/", `\`)
-			paths = append(paths,
-				match[1],
-				strings.ReplaceAll(match[1], `\`, "/"),
-				backslashPath,
-				strings.ReplaceAll(backslashPath, `\`, `\\`),
-			)
-		}
+func imageReplacementMarker(group PromptGroup, imageNumber int) string {
+	if group.Tool != nil && group.Tool.Active {
+		return fmt.Sprintf("[Image %d — task-specific reanalysis completed from the current tool output. Use the latest analysis below.]", imageNumber)
 	}
-	if len(paths) == 0 {
-		return nil
+	if group.AllowAgentReanalysis {
+		return fmt.Sprintf("[Image %d — already analyzed. Use the analysis below; if the current task needs a different visual focus, you may call the declared view_image tool.]", imageNumber)
 	}
-	for _, block := range blocks {
-		object, ok := block.(map[string]any)
-		if !ok {
-			continue
-		}
-		text, ok := object["text"].(string)
-		if !ok {
-			continue
-		}
-		trimmed := strings.TrimSpace(text)
-		if codexImageWrapperPattern.MatchString(trimmed) {
-			object["text"] = "[Analyzed image attachment metadata omitted]"
-			continue
-		}
-		if strings.EqualFold(trimmed, "</image>") {
-			object["text"] = "[End analyzed image attachment]"
-			continue
-		}
-		for _, path := range paths {
-			if path != "" {
-				text = strings.ReplaceAll(text, path, "[analyzed image attachment path omitted]")
-			}
-		}
-		object["text"] = text
+	return fmt.Sprintf("[Image %d — already analyzed; the target model cannot read this attachment directly. Use the joint visual analysis below and do not call view_image for it.]", imageNumber)
+}
+
+func downstreamVisionNotice(group PromptGroup) string {
+	if group.AllowAgentReanalysis {
+		return `[Vision preprocessing notice]
+The images in this prompt have already been analyzed by a vision model. Use the joint visual analysis below as their current visual content. A declared view_image tool may be used when the task needs a new focus.`
 	}
-	return paths
+	return `[Vision preprocessing notice]
+The target model cannot inspect image attachments directly. The images in this prompt have already been analyzed by a vision model. Use the joint visual analysis below as their visual content. Do not call view_image or other image/file tools to reopen these already analyzed attachments.`
 }
 
 func redactAnalyzedAttachmentPaths(value any, paths []string) {

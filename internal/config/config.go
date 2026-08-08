@@ -37,6 +37,7 @@ const (
 type Config struct {
 	TargetModels                 []string
 	VisionModel                  string
+	VisionFallbackModels         []string
 	Language                     string
 	RequestTimeout               time.Duration
 	EmergencyMaxImagesPerRequest int
@@ -48,6 +49,7 @@ type Config struct {
 	AnalysisCacheSize            int
 	AnalysisCacheTTL             time.Duration
 	URLAnalysisCacheTTL          time.Duration
+	AgentReanalysisEnabled       bool
 	TraceEnabled                 bool
 }
 
@@ -61,6 +63,7 @@ type rawConfig struct {
 
 	TargetModels                 []string `yaml:"target_models"`
 	VisionModel                  string   `yaml:"vision_model"`
+	VisionFallbackModels         []string `yaml:"vision_fallback_models"`
 	Language                     string   `yaml:"language"`
 	RequestTimeoutSeconds        int      `yaml:"request_timeout_seconds"`
 	EmergencyMaxImagesPerRequest int      `yaml:"emergency_max_images_per_request"`
@@ -72,6 +75,7 @@ type rawConfig struct {
 	AnalysisCacheSize            int      `yaml:"analysis_cache_size"`
 	AnalysisCacheTTL             int      `yaml:"analysis_cache_ttl_seconds"`
 	URLAnalysisCacheTTL          int      `yaml:"analysis_url_cache_ttl_seconds"`
+	AgentReanalysisEnabled       bool     `yaml:"agent_reanalysis_enabled"`
 	TraceEnabled                 bool     `yaml:"trace_enabled"`
 
 	// Deprecated host-client fields, accepted and unconditionally ignored.
@@ -128,6 +132,7 @@ func cloneConfig(cfg *Config) *Config {
 	}
 	clone := *cfg
 	clone.TargetModels = append([]string(nil), cfg.TargetModels...)
+	clone.VisionFallbackModels = append([]string(nil), cfg.VisionFallbackModels...)
 	return &clone
 }
 
@@ -246,6 +251,9 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	if raw.VisionModel != "" || present["vision_model"] {
 		cfg.VisionModel = raw.VisionModel
 	}
+	if raw.VisionFallbackModels != nil || present["vision_fallback_models"] {
+		cfg.VisionFallbackModels = raw.VisionFallbackModels
+	}
 	if raw.Language != "" || present["language"] {
 		cfg.Language = raw.Language
 	}
@@ -279,6 +287,9 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 	if raw.URLAnalysisCacheTTL != 0 || present["analysis_url_cache_ttl_seconds"] {
 		cfg.URLAnalysisCacheTTL = raw.URLAnalysisCacheTTL
 	}
+	if present["agent_reanalysis_enabled"] {
+		cfg.AgentReanalysisEnabled = raw.AgentReanalysisEnabled
+	}
 	if present["trace_enabled"] {
 		cfg.TraceEnabled = raw.TraceEnabled
 	}
@@ -287,12 +298,18 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 		return nil, err
 	}
 	cfg.TargetModels = models
+	fallbackModels, err := canonicalVisionFallbackModels(cfg.VisionModel, cfg.VisionFallbackModels)
+	if err != nil {
+		return nil, err
+	}
+	cfg.VisionFallbackModels = fallbackModels
 	if err := validateRaw(cfg); err != nil {
 		return nil, err
 	}
 	return &Config{
 		TargetModels:                 append([]string(nil), cfg.TargetModels...),
 		VisionModel:                  strings.TrimSpace(cfg.VisionModel),
+		VisionFallbackModels:         append([]string(nil), cfg.VisionFallbackModels...),
 		Language:                     strings.TrimSpace(cfg.Language),
 		RequestTimeout:               time.Duration(cfg.RequestTimeoutSeconds) * time.Second,
 		EmergencyMaxImagesPerRequest: cfg.EmergencyMaxImagesPerRequest,
@@ -304,8 +321,41 @@ func validate(raw rawConfig, present map[string]bool) (*Config, error) {
 		AnalysisCacheSize:            cfg.AnalysisCacheSize,
 		AnalysisCacheTTL:             time.Duration(cfg.AnalysisCacheTTL) * time.Second,
 		URLAnalysisCacheTTL:          time.Duration(cfg.URLAnalysisCacheTTL) * time.Second,
+		AgentReanalysisEnabled:       cfg.AgentReanalysisEnabled,
 		TraceEnabled:                 cfg.TraceEnabled,
 	}, nil
+}
+
+func canonicalVisionFallbackModels(primary string, models []string) ([]string, error) {
+	if len(models) > 3 {
+		return nil, errors.New("vision_fallback_models must contain at most 3 models")
+	}
+	primary = strings.TrimSpace(primary)
+	canonical := make([]string, len(models))
+	seen := map[string]struct{}{primary: {}}
+	for i, model := range models {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			return nil, fmt.Errorf("vision_fallback_models[%d] must not be empty", i)
+		}
+		if _, ok := seen[model]; ok {
+			return nil, fmt.Errorf("vision_fallback_models contains duplicate model %q", model)
+		}
+		seen[model] = struct{}{}
+		canonical[i] = model
+	}
+	return canonical, nil
+}
+
+// VisionModels returns the ordered primary-plus-fallback model chain.
+func (c *Config) VisionModels() []string {
+	if c == nil {
+		return nil
+	}
+	models := make([]string, 0, 1+len(c.VisionFallbackModels))
+	models = append(models, c.VisionModel)
+	models = append(models, c.VisionFallbackModels...)
+	return models
 }
 
 func canonicalTargetModels(models []string) ([]string, error) {
@@ -374,6 +424,7 @@ func defaultRaw() defaults {
 	return defaults{
 		TargetModels:                 []string{"deepseek-v4-flash"},
 		VisionModel:                  DefaultVisionModel,
+		VisionFallbackModels:         nil,
 		Language:                     DefaultLanguage,
 		RequestTimeoutSeconds:        DefaultRequestTimeoutSec,
 		EmergencyMaxImagesPerRequest: DefaultEmergencyMaxImages,
@@ -385,6 +436,7 @@ func defaultRaw() defaults {
 		AnalysisCacheSize:            DefaultAnalysisCacheSize,
 		AnalysisCacheTTL:             DefaultAnalysisCacheTTL,
 		URLAnalysisCacheTTL:          DefaultURLCacheTTL,
+		AgentReanalysisEnabled:       false,
 		TraceEnabled:                 false,
 	}
 }
@@ -394,6 +446,7 @@ func defaultConfig() *Config {
 	return &Config{
 		TargetModels:                 append([]string(nil), d.TargetModels...),
 		VisionModel:                  d.VisionModel,
+		VisionFallbackModels:         append([]string(nil), d.VisionFallbackModels...),
 		Language:                     d.Language,
 		RequestTimeout:               time.Duration(d.RequestTimeoutSeconds) * time.Second,
 		EmergencyMaxImagesPerRequest: d.EmergencyMaxImagesPerRequest,
@@ -405,6 +458,7 @@ func defaultConfig() *Config {
 		AnalysisCacheSize:            d.AnalysisCacheSize,
 		AnalysisCacheTTL:             time.Duration(d.AnalysisCacheTTL) * time.Second,
 		URLAnalysisCacheTTL:          time.Duration(d.URLAnalysisCacheTTL) * time.Second,
+		AgentReanalysisEnabled:       d.AgentReanalysisEnabled,
 		TraceEnabled:                 d.TraceEnabled,
 	}
 }

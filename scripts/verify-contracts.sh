@@ -20,6 +20,7 @@ required_responses = {
     "06-compact.json",
     "06-compact-rpc.json",
     "07-rpc-after-auth.json",
+    "08-codex-view-image-reanalysis.json",
 }
 actual = {p.name for p in fixture_dir.glob("*.json")}
 missing = required_responses - actual

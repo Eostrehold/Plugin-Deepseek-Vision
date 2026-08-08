@@ -10,6 +10,7 @@ an invalid update leaves the previous snapshot active.
 | `enabled`, `priority` | Host-owned switches | host-defined |
 | `target_models` | Final upstream models eligible for interception | `deepseek-v4-flash` |
 | `vision_model` | VLM model identifier | `gpt-5.6-luna` |
+| `vision_fallback_models` | Ordered VLM candidates selected after `vision_model`; at most three, no duplicates | `[]` |
 | `language` | Preferred output language | `zh` |
 | `request_timeout_seconds` | Total preprocessing deadline | 120 |
 | `max_inflight_vision_requests` | Global in-flight prompt-group VLM calls; excess work queues | 4 |
@@ -18,9 +19,10 @@ an invalid update leaves the previous snapshot active.
 | `max_image_reference_bytes` | URL/data URI limit | 15 MiB |
 | `max_response_bytes` | VLM response limit | 4 MiB |
 | `max_result_chars` | Extracted result limit | 20,000 |
-| `analysis_cache_size` | Maximum prompt-group analysis entries; `0` disables | 128 |
+| `analysis_cache_size` | Maximum ordinary prompt-group analysis entries; `0` disables ordinary reuse | 128 |
 | `analysis_cache_ttl_seconds` | Data-URI analysis TTL | 900 |
 | `analysis_url_cache_ttl_seconds` | URL-image analysis TTL | 120 |
+| `agent_reanalysis_enabled` | Opt-in controlled rich tool-output reanalysis | `false` |
 | `trace_enabled` | Full plaintext debug trace | `false` |
 
 The native ABI applies an additional process-wide admission budget of 32 MiB of
@@ -34,15 +36,22 @@ emergency image-count settings, and `config_generation`. ABI admission failures 
 report the ABI request bytes, hard cap, process budget and in-flight usage. No
 request body, image reference, header or credential is logged.
 
-The plugin calls `host.model.execute` with OpenAI Responses input and lets
-CLIProxyAPI route `vision_model` using its existing provider credentials. The
-nested execution skips this plugin's own interceptor, so it does not recurse.
-No additional VLM endpoint or key is supported or required. CLIProxyAPI also
-owns provider protocol translation, transport, retry, and credential policy.
+The plugin calls `host.model.execute` with OpenAI Responses input and tries the
+ordered chain `vision_model`, then each `vision_fallback_models` entry. A
+fallback is attempted only for a retryable upstream HTTP status (408/429/5xx),
+an attempt timeout, an invalid/empty/oversized result, or a generic host
+executor error. A parent request timeout/cancellation, rewrite failure, or
+other non-retryable condition stops the chain. CLIProxyAPI routes every model
+with its existing provider credentials; the plugin never reads another key.
+The nested execution skips this plugin's own interceptor, so it does not
+recurse. No additional VLM endpoint or key, and no CLIProxyAPI server-side
+tool, is supported or required. CLIProxyAPI owns provider protocol
+translation, transport, retry, and credential policy.
 
-The CPAMC form exposes `vision_model`, `language`, global in-flight vision
-requests, the emergency image ceiling, total timeout, the three cache controls,
-and a boolean `trace_enabled` switch. Their descriptions include bilingual
+The CPAMC form exposes `vision_model`, ordered `vision_fallback_models`,
+`language`, global in-flight vision requests, the emergency image ceiling,
+total timeout, the three cache controls, `agent_reanalysis_enabled`, and a
+boolean `trace_enabled` switch. Their descriptions include bilingual
 defaults; key integer controls also state their validation ranges. Advanced
 size controls remain available through YAML.
 
@@ -76,10 +85,20 @@ Deprecated `vision_backend`, `vision_base_url`, `vision_api_key_env`,
 unconditionally ignored. Configure the actual model/provider in CLIProxyAPI.
 
 Each runtime generation owns an LRU using the configured capacity and TTLs.
-Keys hash the ordered prompt-group image references, model, normalized language,
-and complete prompt.
+Keys hash the ordered prompt-group image references, the complete ordered model
+chain, normalized language, and complete prompt. Normal image work uses this
+TTL cache. Reanalysis defaults to `cache: refresh`: a new call ID runs and
+stores a result, while an identical replay for that call ID reuses the
+idempotency entry. Its identity is call ID plus decoded-image or normalized URL
+fingerprints, focus, normalized language, and the full ordered model chain;
+detail affects the returned image fingerprint, while cache mode is not a
+separate identity field. A call ID reused with different identity is rejected.
+`cache: no_store` runs analysis without reading or writing any cross-request
+entry.
 Reconfigure or restart creates a fresh cache. Setting `analysis_cache_size: 0`
-disables cross-request reuse while retaining single-request deduplication.
+disables the ordinary analysis LRU while retaining single-request deduplication
+and the separate bounded generation-local call-ID idempotency cache for refresh
+replay.
 
 `deepseek-v4-pro` is not enabled by default because its Responses endpoint is
 not part of the validated release surface. Add it explicitly to
@@ -92,10 +111,48 @@ content and cross-image relationships. Image text is declared untrusted and
 must never be followed as an instruction. The configured language applies to
 the explanation while transcription preserves original characters. Up to
 2,000 runes of text from the same prompt item are included as bounded context.
-The rewritten prompt explicitly tells the non-vision target model that these
+The default rewritten prompt tells the non-vision target model that these
 attachments have already been analyzed and must not be reopened with
-`view_image`; exact Codex temporary paths tied to the consumed image wrappers
-are removed while the user's request text is preserved.
+`view_image`; local attachment paths are redacted while the user's request
+text is preserved. With controlled reanalysis enabled and `view_image`
+declared, the marker allows a new-focus call. The only path exception is a strictly validated path under
+`.codex/attachments/<id>/`, and only when `agent_reanalysis_enabled` is true
+and `view_image` is declared in the request.
+
+## Controlled agent reanalysis
+
+Reanalysis is driven by declared tools and rich tool output. The plugin trusts
+only actual image blocks in the matching output (`input_image`, `image_url`, or
+the protocol-native Claude image block); arguments cannot smuggle image bytes,
+URLs, or local paths. It does not register or require a CLIProxyAPI server-side
+tool.
+
+`deepseek_vision_reanalyze` accepts exactly this argument shape (unknown keys
+are rejected):
+
+```json
+{
+  "attachment_ids": ["id-1", "id-2"],
+  "focus": "required task-specific focus",
+  "detail": "high",
+  "cache": "refresh"
+}
+```
+
+- `attachment_ids`: required array of 1–16 non-empty opaque handles owned by the
+  Agent. The plugin validates them but never resolves, reads, or uses them as
+  image sources; only actual output image blocks supply images.
+- `focus`: required non-empty string, at most 2,000 characters.
+- `detail`: optional `high` or `original`, default `high`.
+- `cache`: optional `refresh` or `no_store`, default `refresh`.
+
+The most recent eligible tool output is a tail group. A request may contain at
+most three active tail call IDs. A new `refresh` call ID executes once; an
+identical replay for that ID is idempotent, and changing its identity
+fingerprints or focus/language/model chain is rejected. `no_store` does not
+persist across requests. `view_image` uses the
+same controlled path and defaults to `detail: high`; malformed or undeclared
+tool calls are client errors rather than image fallbacks.
 
 `max_images_per_request` from older builds remains decodable but is ignored. It
 cannot silently restore the former four-block rejection behavior.
@@ -116,3 +173,11 @@ silently pass an image through: unsupported images terminate with a client
 error, while a VLM failure terminates with HTTP 502. A successful rewrite is
 idempotent, removes every discovered protocol-native image block and reference
 from its original structured position, and verifies that no image block remains.
+
+Existing YAML that omits `vision_fallback_models` and
+`agent_reanalysis_enabled` remains valid and receives the defaults above.
+Structured 502 responses expose only `error_id`, the fixed
+`vision_fallback_exhausted` code, and ordered `attempts` containing `model`,
+`category`, optional `upstream_status`, and `retryable`. Host executor details,
+provider response text, credentials, complete image references, and local paths
+remain generic or redacted.

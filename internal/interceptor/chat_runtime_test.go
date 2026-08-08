@@ -89,7 +89,7 @@ func TestChatRouteGateAndErrors(t *testing.T) {
 func TestUnavailableChatImageFailsClosed(t *testing.T) {
 	body := `{"messages":[{"content":[{"type":"image_url","image_url":{"url":"https://example.com/a.png"}}]}]}`
 	resp, err := HandleUnavailable(makeRequest("deepseek-v4-flash", "openai", "/v1/chat/completions", body), "deepseek-v4-flash")
-	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(resp.ResponseBody), "vision preprocessing is unavailable") {
+	if err != nil || !resp.Terminate || resp.StatusCode != http.StatusBadGateway || !strings.Contains(string(resp.ResponseBody), `"code":"vision_fallback_exhausted"`) {
 		t.Fatalf("response=%#v err=%v", resp, err)
 	}
 }

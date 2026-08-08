@@ -34,9 +34,10 @@ func buildVisionAnalyzer(cfg *config.Config) (vision.Analyzer, error) {
 	if cfg == nil {
 		return nil, errors.New("vision configuration is unavailable")
 	}
-	return vision.NewHostClient(vision.HostOptions{
-		Model:            cfg.VisionModel,
+	return vision.NewFallbackAnalyzer(vision.FallbackOptions{
+		Models:           cfg.VisionModels(),
 		MaxResponseBytes: int64(cfg.MaxResponseBytes),
+		MaxResultChars:   cfg.MaxResultChars,
 		Language:         cfg.Language,
 		Execute:          hostVisionExecute,
 	})

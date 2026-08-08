@@ -1,7 +1,7 @@
 # Raw vision outputs from a real trace
 
 The following text is copied verbatim from the two successful
-`40-vlm-job-001-images-1-parsed-result.txt` artifacts in the supplied diagnostic
+`40-vlm-job-001-attempt-01-images-1-parsed-result.txt` artifacts in the supplied diagnostic
 trace. It has not been rewritten by DeepSeek or edited for the README.
 
 ## Front-end action-button layout

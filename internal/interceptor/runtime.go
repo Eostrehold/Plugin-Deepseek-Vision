@@ -3,6 +3,8 @@ package interceptor
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -35,6 +37,7 @@ type runtimeState struct {
 	cfg           *config.Config
 	factory       AnalyzerFactory
 	cache         *analysisCache
+	idempotency   *idempotencyCache
 	visionLimiter *visionLimiter
 	generation    uint64
 	once          sync.Once
@@ -179,7 +182,7 @@ func (r *Runtime) Reconfigure(cfg *config.Config) {
 	r.limiter.SetLimit(cfg.MaxInflightVisionRequests)
 	r.targetModels = append([]string(nil), cfg.TargetModels...)
 	r.current = &runtimeState{
-		cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize),
+		cfg: cfg, factory: r.factory, cache: newAnalysisCache(cfg.AnalysisCacheSize), idempotency: newIdempotencyCache(config.DefaultAnalysisCacheSize),
 		visionLimiter: r.limiter, generation: r.generation,
 	}
 	r.shutdown = false
@@ -224,7 +227,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	}
 	defer func() {
 		if recovered := recover(); recovered != nil {
-			resp = terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed")
+			resp = r.terminateVisionFailure(context.Background(), nil, protocol, normalizeVisionFailure(ErrRuntimeUnavailable, ""))
 		}
 		safeTraceResult(traceSession, started, resp)
 		err = nil
@@ -238,7 +241,7 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		// targeted image-shaped Responses requests and retain passthrough for
 		// unrelated models and requests without image candidates.
 		if unavailableAdapter, unavailable := unavailableImageRequest(req, r.targetModelSnapshot()); unavailable {
-			return terminate(unavailableAdapter.Protocol(), http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
+			return r.terminateVisionFailure(context.Background(), nil, unavailableAdapter.Protocol(), normalizeVisionFailure(ErrRuntimeUnavailable, "")), nil
 		}
 		return resp, nil
 	}
@@ -258,13 +261,14 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	defer cancel()
 
 	plan, planErr := adapter.Discover(req.Body, downstream.Options{
-		MaxImages:         cfg.EmergencyMaxImagesPerRequest,
-		MaxReferenceBytes: cfg.MaxImageReferenceBytes,
-		MaxBodyBytes:      cfg.MaxRequestBytes,
-		MaxResultChars:    cfg.MaxResultChars,
+		MaxImages:              cfg.EmergencyMaxImagesPerRequest,
+		MaxReferenceBytes:      cfg.MaxImageReferenceBytes,
+		MaxBodyBytes:           cfg.MaxRequestBytes,
+		MaxResultChars:         cfg.MaxResultChars,
+		AgentReanalysisEnabled: cfg.AgentReanalysisEnabled,
 	})
 	if ctx.Err() != nil {
-		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing deadline exceeded"), nil
+		return r.terminateVisionFailure(ctx, state, protocol, normalizeVisionFailure(ctx.Err(), cfg.VisionModel)), nil
 	}
 	if planErr != nil {
 		traceDiscoveryError(traceSession, planErr)
@@ -282,39 +286,80 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	results := make([]string, len(groups))
 	type analysisJob struct {
 		id           int
-		key          string
+		jobKey       string
+		normalKey    string
 		ttl          time.Duration
 		images       []vision.ImageInput
 		prompt       string
 		indexes      []int
 		imageNumbers []int
+		callID       string
+		cacheMode    string
+		reservation  *idempotencyReservation
 	}
 	jobsByKey := make(map[string]*analysisJob, len(groups))
 	jobs := make([]*analysisJob, 0, len(groups))
+	defer func() {
+		for _, job := range jobs {
+			state.idempotency.Complete(job.reservation, "", errIdempotencyReservationAborted, 0)
+		}
+	}()
+	reanalysisCalls := make(map[string]string)
 	cachePlan := cacheTracePlan{Groups: make([]cacheTraceRecord, 0, len(groups))}
+	models := cfg.VisionModels()
 	for i := range groups {
 		groupImages := visionInputs(groups[i].Images)
-		key, ttl := analysisGroupCacheKey(groupImages, cfg.VisionModel, cfg.Language, groups[i].Prompt, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
+		normalKey, ttl := analysisGroupCacheKey(groupImages, models, cfg.Language, groups[i].Prompt, cfg.AnalysisCacheTTL, cfg.URLAnalysisCacheTTL)
+		jobKey := normalKey
+		cacheMode := "normal"
+		callID := ""
+		if tool := groups[i].Tool; tool != nil && tool.Active {
+			callID = tool.CallID
+			cacheMode = tool.CacheMode
+			if previous, ok := reanalysisCalls[callID]; ok && previous != normalKey {
+				return terminate(protocol, http.StatusBadRequest, "invalid_request_error", invalidRequestMessage(protocol)), nil
+			}
+			reanalysisCalls[callID] = normalKey
+			jobKey = "reanalysis:" + digestString(callID) + ":" + normalKey
+		}
 		imageNumbers := make([]int, len(groupImages))
 		for j := range groupImages {
 			imageNumbers[j] = groupImages[j].Number
 		}
-		if cached, ok := state.cache.Get(key); ok {
-			results[i] = cached
-			cachePlan.CacheHits++
-			cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "cache_hit", CacheKey: key})
-			continue
-		}
-		if existing := jobsByKey[key]; existing != nil {
+		if existing := jobsByKey[jobKey]; existing != nil {
 			existing.indexes = append(existing.indexes, i)
 			cachePlan.RequestDeduplicates++
-			cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "request_deduplicated", JobID: existing.id, CacheKey: key})
+			cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "request_deduplicated", JobID: existing.id, CacheKey: normalKey})
 			continue
 		}
-		job := &analysisJob{id: len(jobs) + 1, key: key, ttl: ttl, images: groupImages, prompt: groups[i].Prompt, indexes: []int{i}, imageNumbers: imageNumbers}
-		jobsByKey[key] = job
+		var reservation *idempotencyReservation
+		if cacheMode == "refresh" {
+			reserved, cached, ok, cacheErr := state.idempotency.Reserve(ctx, callID, normalKey)
+			if cacheErr != nil {
+				if !errors.Is(cacheErr, errReanalysisCallConflict) {
+					return r.terminateVisionFailure(ctx, state, protocol, normalizeVisionFailure(cacheErr, cfg.VisionModel)), nil
+				}
+				return terminate(protocol, http.StatusBadRequest, "invalid_request_error", invalidRequestMessage(protocol)), nil
+			}
+			if ok {
+				results[i] = cached
+				cachePlan.CacheHits++
+				cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "idempotency_hit", CacheKey: normalKey})
+				continue
+			}
+			reservation = reserved
+		} else if cacheMode == "normal" {
+			if cached, ok := state.cache.Get(normalKey); ok {
+				results[i] = cached
+				cachePlan.CacheHits++
+				cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "cache_hit", CacheKey: normalKey})
+				continue
+			}
+		}
+		job := &analysisJob{id: len(jobs) + 1, jobKey: jobKey, normalKey: normalKey, ttl: ttl, images: groupImages, prompt: groups[i].Prompt, indexes: []int{i}, imageNumbers: imageNumbers, callID: callID, cacheMode: cacheMode, reservation: reservation}
+		jobsByKey[jobKey] = job
 		jobs = append(jobs, job)
-		cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "vlm_job", JobID: job.id, CacheKey: key})
+		cachePlan.Groups = append(cachePlan.Groups, cacheTraceRecord{GroupID: groups[i].ID, ImageNumbers: imageNumbers, Disposition: "vlm_job", JobID: job.id, CacheKey: normalKey})
 	}
 	cachePlan.VLMJobs = len(jobs)
 	traceCache(traceSession, cachePlan)
@@ -323,6 +368,11 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 		if rewriteErr != nil {
 			traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 			r.tracePlannerLimit(ctx, state, rewriteErr)
+			var planner *downstream.Error
+			if errors.As(rewriteErr, &planner) && planner.StatusCode >= http.StatusInternalServerError {
+				failure := &vision.Failure{Code: "vision_fallback_exhausted", Attempts: []vision.AttemptFailure{{Model: cfg.VisionModel, Category: vision.FailureRewriteFailed, Retryable: false}}}
+				return r.terminateVisionFailure(ctx, state, protocol, failure), nil
+			}
 			return terminateForError(protocol, rewriteErr), nil
 		}
 		traceRewrite(traceSession, req.Body, rewritten, len(images))
@@ -330,10 +380,14 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	}
 	analyzer, analyzerErr := state.getAnalyzer()
 	if analyzerErr != nil {
-		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
+		for _, job := range jobs {
+			state.idempotency.Complete(job.reservation, "", analyzerErr, 0)
+		}
+		failure := &vision.Failure{Code: "vision_fallback_exhausted", Attempts: []vision.AttemptFailure{{Model: cfg.VisionModel, Category: vision.FailureHostExecutor, Retryable: true}}}
+		return r.terminateVisionFailure(ctx, state, protocol, failure), nil
 	}
 	var wg sync.WaitGroup
-	var firstErr error
+	jobErrors := make(map[int]error)
 	var errMu sync.Mutex
 	jobQueue := make(chan *analysisJob)
 	workerCount := cfg.MaxInflightVisionRequests
@@ -348,15 +402,19 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 				jobCtx := tracelog.WithJob(ctx, tracelog.Job{ID: job.id, ImageNumbers: job.imageNumbers})
 				result, analyzeErr := safeAnalyzeGroup(jobCtx, state.visionLimiter, analyzer, job.images, job.prompt, cfg.MaxResultChars)
 				if analyzeErr != nil {
+					state.idempotency.Complete(job.reservation, "", analyzeErr, 0)
 					errMu.Lock()
-					if firstErr == nil {
-						firstErr = analyzeErr
-					}
+					jobErrors[job.id] = analyzeErr
 					errMu.Unlock()
-					cancel()
 					continue
 				}
-				state.cache.Set(job.key, result, job.ttl)
+				switch job.cacheMode {
+				case "refresh":
+					state.cache.Set(job.normalKey, result, job.ttl)
+					state.idempotency.Complete(job.reservation, result, nil, job.ttl)
+				case "normal":
+					state.cache.Set(job.normalKey, result, job.ttl)
+				}
 				for _, index := range job.indexes {
 					results[index] = result
 				}
@@ -372,15 +430,29 @@ func (r *Runtime) Handle(req pluginapi.RequestInterceptRequest) (resp pluginapi.
 	close(jobQueue)
 	wg.Wait()
 	errMu.Lock()
-	hasErr := firstErr != nil
+	var selectedErr error
+	for jobID := 1; jobID <= len(jobs); jobID++ {
+		if jobErrors[jobID] != nil {
+			selectedErr = jobErrors[jobID]
+			break
+		}
+	}
 	errMu.Unlock()
-	if hasErr {
-		return terminate(protocol, http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing failed"), nil
+	if selectedErr == nil && ctx.Err() != nil {
+		selectedErr = ctx.Err()
+	}
+	if selectedErr != nil {
+		return r.terminateVisionFailure(ctx, state, protocol, normalizeVisionFailure(selectedErr, cfg.VisionModel)), nil
 	}
 	rewritten, rewriteErr := plan.RewriteGroupsText(results)
 	if rewriteErr != nil {
 		traceProcessingError(traceSession, "rewrite_failed", rewriteErr)
 		r.tracePlannerLimit(ctx, state, rewriteErr)
+		var planner *downstream.Error
+		if errors.As(rewriteErr, &planner) && planner.StatusCode >= http.StatusInternalServerError {
+			failure := &vision.Failure{Code: "vision_fallback_exhausted", Attempts: []vision.AttemptFailure{{Model: cfg.VisionModel, Category: vision.FailureRewriteFailed, Retryable: false}}}
+			return r.terminateVisionFailure(ctx, state, protocol, failure), nil
+		}
 		return terminateForError(protocol, rewriteErr), nil
 	}
 	traceRewrite(traceSession, req.Body, rewritten, len(images))
@@ -522,6 +594,9 @@ func (r *Runtime) tracePlannerLimit(ctx context.Context, state *runtimeState, er
 }
 
 func safeDiagnostic(diagnostic DiagnosticFunc, callbackID, level, message string, fields map[string]any) {
+	if diagnostic == nil {
+		return
+	}
 	defer func() { _ = recover() }()
 	diagnostic(callbackID, level, message, fields)
 }
@@ -536,7 +611,7 @@ func HandleUnavailable(req pluginapi.RequestInterceptRequest, targetModels ...st
 		targetModels = config.Default().TargetModels
 	}
 	if adapter, unavailable := unavailableImageRequest(req, targetModels); unavailable {
-		return terminate(adapter.Protocol(), http.StatusBadGateway, "vision_preprocess_error", "vision preprocessing is unavailable"), nil
+		return (*Runtime)(nil).terminateVisionFailure(context.Background(), nil, adapter.Protocol(), normalizeVisionFailure(ErrRuntimeUnavailable, "")), nil
 	}
 	return passthrough(req), nil
 }
@@ -594,6 +669,67 @@ func targetModelMatches(model string, targetModels []string) bool {
 	return false
 }
 
+func normalizeVisionFailure(err error, model string) *vision.Failure {
+	var failure *vision.Failure
+	if errors.As(err, &failure) && failure != nil {
+		return failure
+	}
+	attempt := vision.AttemptFailure{Model: model, Category: vision.FailureHostExecutor, Retryable: true}
+	switch {
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, context.Canceled):
+		attempt.Category = vision.FailureRequestTimeout
+		attempt.Retryable = false
+	case errors.Is(err, safety.ErrResultTooLarge), errors.Is(err, vision.ErrResultTooLarge):
+		attempt.Category = vision.FailureResultTooLarge
+	}
+	return &vision.Failure{Code: "vision_fallback_exhausted", Attempts: []vision.AttemptFailure{attempt}}
+}
+
+func (r *Runtime) terminateVisionFailure(ctx context.Context, state *runtimeState, protocol downstream.Protocol, failure *vision.Failure) pluginapi.RequestInterceptResponse {
+	if failure == nil {
+		failure = normalizeVisionFailure(ErrRuntimeUnavailable, "")
+	}
+	errorID := newVisionErrorID()
+	details := map[string]any{"error_id": errorID, "attempts": failure.Attempts}
+	openAIError := map[string]any{
+		"type": "vision_preprocess_error", "code": "vision_fallback_exhausted",
+		"message": "vision preprocessing failed", "details": details,
+	}
+	var payload any = map[string]any{"error": openAIError}
+	if protocol == downstream.ProtocolClaude {
+		payload = map[string]any{
+			"type": "error",
+			"error": map[string]any{
+				"type": "api_error", "message": "vision preprocessing failed",
+				"code": "vision_fallback_exhausted", "details": details,
+			},
+		}
+	}
+	body, _ := json.Marshal(payload)
+	fields := map[string]any{"error_id": errorID, "attempts": failure.Attempts}
+	if state != nil {
+		fields["config_generation"] = state.generation
+	}
+	var diagnostic DiagnosticFunc
+	if r != nil {
+		diagnostic = r.diagnostic
+	}
+	safeDiagnostic(diagnostic, vision.HostCallbackID(ctx), "error", "deepseek-vision preprocessing failed error_id="+errorID, fields)
+	return pluginapi.RequestInterceptResponse{
+		Terminate: true, StatusCode: http.StatusBadGateway,
+		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}}, ResponseBody: body,
+	}
+}
+
+func newVisionErrorID() string {
+	var raw [12]byte
+	if _, err := rand.Read(raw[:]); err == nil {
+		return "vpe_" + hex.EncodeToString(raw[:])
+	}
+	fallback := digestString(fmt.Sprintf("%d", time.Now().UnixNano()))
+	return "vpe_" + fallback[:24]
+}
+
 func terminateForError(protocol downstream.Protocol, err error) pluginapi.RequestInterceptResponse {
 	var planner *downstream.Error
 	if errors.As(err, &planner) {
@@ -642,6 +778,11 @@ func publicLimitMessage(limit downstream.LimitKind, actual, maximum int) string 
 			return fmt.Sprintf("vision result exceeds configured limit: found %d characters, limit %d", actual, maximum)
 		}
 		return "vision result exceeds configured limit"
+	case downstream.LimitReanalysisCount:
+		if actual > 0 && maximum > 0 {
+			return fmt.Sprintf("request contains too many active image reanalysis calls: found %d, limit %d", actual, maximum)
+		}
+		return "request contains too many active image reanalysis calls"
 	default:
 		return "request exceeds configured limit"
 	}

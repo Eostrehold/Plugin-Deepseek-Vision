@@ -7,7 +7,7 @@
 `deepseek-vision` 是一个面向 **CLIProxyAPI v7** 的原生请求预处理插件。它通过宿主已有的视觉模型读取图片，
 把同一 prompt 中的多张图片转换为一份联合视觉分析，再交给 DeepSeek 继续推理。
 
-[![Release](https://img.shields.io/badge/release-v0.2.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
@@ -28,7 +28,7 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 > 这不是新的代理、模型提供商或协议转换层。插件不配置额外 endpoint 或 API key；模型路由、凭据、协议转换、
 > 网络传输、重试与供应商限流都继续由 CLIProxyAPI 负责。
 
-## v0.2.0 有什么
+## v0.3.0 有什么
 
 | 能力 | 行为 |
 | --- | --- |
@@ -39,6 +39,8 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 | **全局背压** | `max_inflight_vision_requests` 限制全进程在途视觉任务，多余任务排队而不是被粗暴拒绝 |
 | **按需拆批** | 正常多图请求保持完整；只有宿主明确返回 413 时才按原顺序自适应拆分 |
 | **缓存与去重** | 请求内合并相同 prompt 组，跨请求复用可配置 TTL LRU 中的派生分析结果 |
+| **有序视觉回退** | 按 `vision_model`、`vision_fallback_models` 顺序尝试；最多 3 个回退模型，条件和错误字段受控 |
+| **受控 Agent 重分析** | 可选处理已声明的 `view_image` / `deepseek_vision_reanalyze` rich tool output；默认关闭 |
 | **非视觉模型提示** | 明确告知 DeepSeek 图片已经分析完成且不能直接读图，避免再次调用 `view_image` |
 | **稳定配置生命周期** | 空白或无效的编辑不会让插件拒绝注册；保留上一份有效运行时和可配置表单 |
 | **完整诊断 trace** | 可选记录原始上下文、分组、VLM 请求/响应、缓存计划及改写结果，用于复杂多轮排障 |
@@ -84,8 +86,37 @@ flowchart LR
 <逐图内容、可见文字、差异与关系>
 ```
 
+上面的禁止重开提示是默认（`agent_reanalysis_enabled: false`）路径；启用受控重分析并在请求声明
+`view_image` 时，插件会改用允许新焦点重分析的标记，但仍只接受 rich tool output 中的真实图片块。
+
 VLM 提示词要求忠实转录文字、标记无法辨认的内容、解释多图关系，并把图片和用户上下文中的指令视为
-不可信数据。插件还会清理已消费附件对应的 Codex 临时路径，避免非视觉目标模型再次尝试打开图片。
+不可信数据。默认情况下插件会清理已消费附件对应的本地路径。只有开启
+`agent_reanalysis_enabled`、请求显式声明 `view_image`，且路径严格位于
+`.codex/attachments/<id>/` 时，才会为受控重分析保留该路径；工具参数本身从不提供图片，插件只信任
+tool output 中实际的图片块。
+
+### 受控 Agent 重分析
+
+这是插件内置的请求改写能力，不是 CLIProxyAPI 的 server-side tool。它只在配置
+`agent_reanalysis_enabled: true` 且请求声明对应工具时生效：`view_image` 的 rich tool output，或
+`deepseek_vision_reanalyze` 的 rich tool output。后者参数严格为：
+
+```json
+{
+  "attachment_ids": ["id-1"],
+  "focus": "必须提供的任务焦点（最多 2000 个字符）",
+  "detail": "high",
+  "cache": "refresh"
+}
+```
+
+`attachment_ids` 是 Agent 所有的 opaque handle，插件只校验 1–16 个非空字符串，绝不解析、读取或把它们
+当作图片来源；真实图片只能来自对应 tool output。`focus` 必填且不超过 2,000 个字符；`detail` 仅接受
+`high` 或 `original`，默认 `high`；`cache` 仅接受 `refresh` 或 `no_store`，默认 `refresh`。
+图片只能来自对应 tool output 的真实图片块，绝不从 arguments 推断或下载。每个请求最多三个活动的
+tail call ID。新 call ID 的 `refresh` 会执行一次并记录结果；幂等身份由 call ID、解码后的图片或规范化
+URL 指纹、focus、规范化语言和完整有序模型链组成（detail 会影响返回的图片指纹，cache 不是额外身份字段）。
+相同身份的 `refresh` 重放幂等命中，换用不同身份会拒绝。`no_store` 可以执行分析，但不写入跨请求缓存。
 
 ## 支持边界
 
@@ -98,7 +129,7 @@ claude          + /v1/messages
 final Model ∈ target_models
 ```
 
-| 场景 | v0.2.0 |
+| 场景 | v0.3.0 |
 | --- | --- |
 | `input[].content[]` 中的 URL / data URI `input_image` | ✅ |
 | 数组型 `function_call_output.output[]` 中的 `input_image` | ✅ |
@@ -117,7 +148,7 @@ final Model ∈ target_models
 
 当前插件尚未收录到 CLIProxyAPI 官方插件源，需要先从
 [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载与 CLIProxyAPI 运行平台匹配的
-v0.2.0 ZIP；解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见
+v0.3.0 ZIP；解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见
 [安装文档](docs/installation.md)。
 
 ### Docker 部署
@@ -161,13 +192,15 @@ plugins/<GOOS>/<GOARCH>/deepseek-vision.<ext>
 | --- | ---: | --- |
 | `target_models` | `deepseek-v4-flash` | 需要视觉预处理的最终模型列表 |
 | `vision_model` | `gpt-5.6-luna` | CLIProxyAPI 中已有的视觉模型名称 |
+| `vision_fallback_models` | `[]` | 插件在主模型失败后按顺序选择的视觉模型，最多 3 个；路由/凭据仍由 CLIProxyAPI 管理 |
 | `language` | `zh` | `zh`、`en` 或 `auto` |
 | `max_inflight_vision_requests` | `4` | 全局在途 prompt 组数量，范围 1–16 |
 | `emergency_max_images_per_request` | `256` | 极端请求的唯一图片兜底上限，不是日常批大小 |
 | `request_timeout_seconds` | `120` | 包含排队时间的整次预处理期限 |
-| `analysis_cache_size` | `128` | 派生文本缓存条目；`0` 关闭跨请求缓存 |
+| `analysis_cache_size` | `128` | 普通派生文本缓存条目；`0` 关闭普通跨请求复用 |
 | `analysis_cache_ttl_seconds` | `900` | data URI 分析缓存秒数 |
 | `analysis_url_cache_ttl_seconds` | `120` | URL 图片分析缓存秒数 |
+| `agent_reanalysis_enabled` | `false` | 允许受控 rich tool-output 重分析；可能保留严格校验的 Codex 附件路径 |
 | `trace_enabled` | `false` | 完整明文调试 trace，仅临时启用 |
 
 ### 可选：手动写入配置
@@ -186,8 +219,11 @@ plugins:
 完整字段、默认值和高级限制见 [`config.example.yaml`](config.example.yaml) 与
 [配置参考](docs/configuration.md)。
 
-缓存键由有序图片引用、完整 prompt、视觉模型和规范化语言组成；缓存只保存不可逆哈希键与派生分析文本，
-不保存原图或图片引用。重配置或重启会创建新的缓存代际。
+缓存键由有序图片引用、完整 prompt、完整有序视觉模型链和规范化语言组成；缓存只保存不可逆哈希键与
+派生分析文本，不保存原图或图片引用。普通预处理命中可配置 TTL 缓存。重分析默认 `cache: refresh`：
+新 call ID 会执行并更新结果，相同 call ID 与相同输入的重放只复用该 call 的幂等结果；`cache: no_store`
+不读取或写入跨请求缓存。`analysis_cache_size: 0` 只关闭普通分析 LRU；独立的、有界且代际内的
+call-ID 幂等缓存仍可处理 refresh 重放。重配置或重启会创建新的缓存代际。
 
 ## 错误与诊断
 
@@ -198,9 +234,12 @@ plugins:
 | `400` | Responses JSON 或支持范围内的结构无效 |
 | `413` | 请求体、图片引用、ABI 准入或唯一图片应急上限（默认 256）被触发 |
 | `422` | 图片来源不受支持，例如只有 `file_id` |
-| `502` | 视觉模型失败、超时、响应无效或最终改写校验失败 |
+| `502` | 视觉模型回退耗尽、超时、响应无效或最终改写校验失败；响应只含安全摘要 |
 
 普通 413 会通过宿主 `host.log` 记录 `limit_kind`、实际值、上限和配置代际，不记录请求正文或图片内容。
+安全的 502 JSON 包含不透明 `error_id`、有序 `attempts`（`model`、`category`、可选
+`upstream_status`、`retryable`）和固定错误码 `vision_fallback_exhausted`；不会返回上游原文、完整 URL、
+data URI、凭据或本地路径。宿主 executor 错误保持通用 `host_executor_error`，不会把内部错误细节暴露给客户端。
 
 复杂多轮问题可以临时启用 `trace_enabled: true`。文件写入：
 
@@ -219,11 +258,11 @@ request bundle 包含完整原始 body、图片 URL / data URI、发现位置、
 `objdump`（Windows）。脚本默认构建当前宿主的 GOOS/GOARCH：
 
 ```bash
-VERSION=0.2.0 ./scripts/package.sh
+VERSION=0.3.0 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-产物是可复现的 `dist/deepseek-vision_0.2.0_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
+产物是可复现的 `dist/deepseek-vision_0.3.0_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
 普通提交和 PR 除常规检查外，只构建 Linux amd64 兼容包：
 
 ```bash
@@ -234,20 +273,24 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-在 GitHub Actions 中手动运行 Release workflow 并输入 `0.2.0` 后，它才会在 6 个原生 runner 上全量
+在 GitHub Actions 中手动运行 Release workflow 并输入 `0.3.0` 后，它才会在 6 个原生 runner 上全量
 构建，聚合 6 个 ZIP 与一份 checksum，并把资产写入 Draft Release；检查无误后再由维护者手动发布。
 CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制
 
-- v0.2.0 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
+- v0.3.0 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
   但本版本尚未发布未经 FreeBSD 实机验收的资产。
 - 插件只改写精确命中的 Responses、Chat Completions 和 Anthropic Messages 路由。
 - 预处理必须在响应流开始前完成，因此 VLM 延迟会增加首字节时间。
 - 缓存为进程内缓存，不会在多个 CLIProxyAPI 实例间共享。
+- `no_store` 重分析不会留下跨请求缓存；`refresh` 只对相同 call ID、图片/URL 指纹、focus、语言和完整模型链
+  做幂等重放。`analysis_cache_size: 0` 不会关闭独立的 refresh 幂等缓存。
+- Agent 重分析默认关闭；启用后也只保留请求声明 `view_image` 且严格符合
+  `.codex/attachments/<id>/` 的路径，工具输出中没有真实图片块时不会伪造图片。
 - URL 图片会由视觉模型所在上游读取；仍需根据部署设置 DNS、网络出口和 allowlist。
-- `deepseek-v4-pro` 不是 v0.2.0 的发布验收目标。
+- `deepseek-v4-pro` 不是 v0.3.0 的发布验收目标。
 
 完整边界见 [限制说明](docs/limitations.md) 与 [安全说明](docs/security.md)。
 

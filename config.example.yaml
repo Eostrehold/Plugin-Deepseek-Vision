@@ -10,6 +10,9 @@ plugins:
       # Reuse a vision model and credentials already configured in CLIProxyAPI
       # through the native host.model.execute callback.
       vision_model: gpt-5.6-luna
+      # Optional ordered fallbacks. The primary vision_model is tried first;
+      # at most three additional models available through CLIProxyAPI may be listed here.
+      vision_fallback_models: []
 
       language: zh
       request_timeout_seconds: 120
@@ -24,10 +27,16 @@ plugins:
       max_response_bytes: 4194304
       max_result_chars: 20000
 
-      # Derived-text cache. Set size to 0 to disable.
+      # Ordinary derived-text cache. Set size to 0 to disable ordinary reuse;
+      # refresh call-ID idempotency remains separately bounded.
       analysis_cache_size: 128
       analysis_cache_ttl_seconds: 900
       analysis_url_cache_ttl_seconds: 120
+
+      # Allow only declared, controlled rich tool-output reanalysis. Disabled
+      # by default; enabling it can preserve strictly validated Codex
+      # attachment paths when the request declares view_image.
+      agent_reanalysis_enabled: false
 
       # High-sensitivity debugging only. Writes complete plaintext request,
       # image references/data URIs, VLM payloads/results, and rewritten bodies to

@@ -1,10 +1,10 @@
 # 插件契约
 
-本文件冻结 `deepseek-vision` v0.2.0 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
+本文件冻结 `deepseek-vision` v0.3.0 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
 
 本版本的真实网关和发布验收只使用 `deepseek-v4-flash`。契约和配置保留
 `deepseek-v4-pro` 作为未来支持目标，但其 Responses 服务当前不可用，因此
-不要求、不探测，也不把 pro 真实调用作为 v0.2.0 的完成条件。
+不要求、不探测，也不把 pro 真实调用作为 v0.3.0 的完成条件。
 
 ## 1. ABI 与 RPC
 
@@ -81,13 +81,17 @@ Chat tool 消息和 Claude `tool_result.content[]`；历史图片不会因为它
 
 同一个 message/content/tool-result prompt 项中的全部图片按顺序合并为一次 VLM 调用，不再按图拆分
 OCR 或维护独立视觉服务。插件通过 CLIProxyAPI 的 `host.model.execute` 执行 OpenAI
-Responses 请求，默认模型为
-`gpt-5.6-luna`。模型路由、凭证、供应商协议转换、传输和重试由宿主管理；插件不读取
-额外 key，宿主跳过当前插件以阻止嵌套调用递归。插件不提供 external HTTP 后端。
+Responses 请求，按 `vision_model`、`vision_fallback_models` 的顺序尝试模型。最多三个回退模型；
+模型路由、凭证、供应商协议转换、传输和重试由宿主管理，插件不读取额外 key，宿主跳过当前插件以阻止嵌套调用递归。
+插件不提供 external HTTP 后端，也不注册 CLIProxyAPI server-side tool。
 
-相同有序图片组、模型、规范化语言和完整 prompt 的工作必须去重。成功的派生文本可进入
+相同有序图片组、完整有序模型链、规范化语言和完整 prompt 的工作必须去重。成功的派生文本可进入
 有界代际缓存；缓存键不得保留原图片引用，失败结果不得缓存。data URI 使用较长 TTL，
-可能变化的 URL 使用较短 TTL；重配置必须换新缓存。
+可能变化的 URL 使用较短 TTL；重配置必须换新缓存。受控重分析的 `refresh` 为新 call ID 运行并记录
+结果，相同 call ID 与相同输入重放幂等命中；其身份由 call ID、解码后的图片或规范化 URL 指纹、focus、
+规范化语言和完整有序模型链组成（detail 影响返回的图片指纹，cache 不是额外身份字段）。`no_store`
+不读取或写入跨请求缓存。`analysis_cache_size: 0` 只关闭普通分析 LRU；独立的、有界且代际内的
+call-ID 幂等缓存仍可处理 `refresh` 重放。
 
 请求核心形状：
 
@@ -118,6 +122,13 @@ Responses 请求，默认模型为
 
 VLM 响应必须可抽取为非空文本，并受 `max_response_bytes` 和 `max_result_chars` 限制。
 
+### 有序回退条件
+
+主模型 `vision_model` 总是先尝试。只有以下结果才按顺序尝试下一个
+`vision_fallback_models`：上游 HTTP 408、429 或 5xx；单次尝试超时；响应无效、为空或超出响应/结果上限；
+以及无法分类的宿主 executor 错误。父请求 deadline/cancel、重写失败和其他不可重试结果不会继续回退。
+每次尝试都使用父 context 的剩余时间；回退模型最多 3 个，且不得与主模型重复。
+
 ## 5. Responses 图片改写
 
 扫描以下路径中的 `type == "input_image"`：
@@ -140,8 +151,10 @@ VLM 响应必须可抽取为非空文本，并受 `max_response_bytes` 和 `max_
 
 `N` 在每个 prompt 组内从 1 开始。所有其他字段、非图片块和原有顺序保持不变；被替换的
 图片块以及生成的分析文本不得保留对应的原始 `input_image`、URL 或 data URI。改写
-还必须移除与已分析附件对应的 Codex 本地临时路径，并明确通知下游目标模型直接使用
-联合分析、不要再次调用 `view_image`。必须幂等（重复处理已替换文本不会再次调用 VLM）。
+还必须默认移除与已分析附件对应的本地临时路径，并明确通知下游目标模型直接使用
+联合分析。只有 `agent_reanalysis_enabled=true`、请求声明 `view_image` 且路径严格符合
+`.codex/attachments/<id>/` 时，才可保留该路径供受控重分析；工具参数不能提供图片引用或路径。
+必须幂等（重复处理已替换文本不会再次调用 VLM）。
 
 ## 6. Chat Completions 图片改写
 
@@ -158,9 +171,57 @@ content 数组末尾追加一次联合分析。所有 message/tool 字段和非�
 直接 message 图片按 message 分组，每个 tool_result 单独分组。图片替换为 Anthropic
 text block，原图片的 `cache_control` 复制到对应标记，联合分析追加在相同容器内。
 
-## 8. 失败、安全与上游调用顺序
+## 8. 受控 Agent 重分析
 
-任意一张图片的 VLM 请求失败、超时、响应非法、结果为空、VLM 结果超限或无法读取图片，都必须返回 `Terminate=true`、`StatusCode=502`（请求结构不支持则 422），且不泄露凭据、完整图片 URL、data URI 或上游原文。Responses/Chat 使用 OpenAI error envelope；Claude 使用 Anthropic `type:"error"` envelope，客户端错误类型为 `invalid_request_error`，502 为 `api_error`。
+只有配置 `agent_reanalysis_enabled: true` 且请求显式声明工具时才启用。支持
+`view_image` 和 `deepseek_vision_reanalyze` 的 rich tool output；工具参数不提供图片，
+插件只信任相应 tool output 中实际存在的协议原生图片块。该能力是插件内的请求改写，不是
+CLIProxyAPI server-side tool。
+
+`deepseek_vision_reanalyze` 的 arguments 必须匹配以下 schema（未知字段拒绝）：
+
+```json
+{
+  "attachment_ids": ["id-1", "id-2"],
+  "focus": "required focus",
+  "detail": "high",
+  "cache": "refresh"
+}
+```
+
+等价的约束表示为：
+
+```json
+{
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["attachment_ids", "focus"],
+  "properties": {
+    "attachment_ids": {"type": "array", "minItems": 1, "maxItems": 16, "items": {"type": "string", "minLength": 1}},
+    "focus": {"type": "string", "minLength": 1, "maxLength": 2000},
+    "detail": {"type": "string", "enum": ["high", "original"], "default": "high"},
+    "cache": {"type": "string", "enum": ["refresh", "no_store"], "default": "refresh"}
+  }
+}
+```
+
+- `attachment_ids`: 必填，1–16 个非空 opaque handle，由 Agent 所有。插件只校验字符串，绝不解析、读取
+  或将其作为图片来源；图片只能来自已出现的 tool-output 图片块。
+- `focus`: 必填非空字符串，最多 2,000 个字符。
+- `detail`: 可选 `high` 或 `original`，默认 `high`。
+- `cache`: 可选 `refresh` 或 `no_store`，默认 `refresh`。
+
+`view_image` 的 detail 默认也是 `high`。每个请求最多三个活动的 tail call ID；超过上限返回 413。
+新的 `refresh` call ID 只执行一次；相同 call ID 和上述相同身份的重放必须幂等，同一 ID 换用不同身份则返回
+400。`no_store` 可以执行分析，但不得读取或写入跨请求缓存。
+默认会脱敏本地路径；只有显式声明 `view_image` 时，严格匹配 `.codex/attachments/<id>/` 的路径
+才可在启用开关后保留。
+
+## 9. 失败、安全与上游调用顺序
+
+任意一张图片的有序视觉模型链都失败、超时、响应非法、结果为空、VLM 结果超限或无法读取图片，都必须返回 `Terminate=true`、`StatusCode=502`（请求结构不支持则 422），且不泄露凭据、完整图片 URL、data URI 或上游原文。Responses/Chat 使用 OpenAI error envelope；Claude 使用 Anthropic `type:"error"` envelope，客户端错误类型为 `invalid_request_error`，502 为 `api_error`。
+
+502 的 JSON 必须包含不透明 `error_id`、固定 `code:"vision_fallback_exhausted"` 和安全的 `details.attempts` 数组。每个 attempt 仅允许 `model`、`category`、可选 `upstream_status` 与 `retryable`；host executor 失败使用通用 `host_executor_error`，不得回显内部错误。不得包含 provider 原文、完整 URL/data URI、凭据或本地路径。
 
 具体状态语义固定为：正常 runtime 下 JSON 结构错误返回 400；不支持的图片来源
 （例如只有 `file_id`）返回 422；请求体、图片引用或唯一图片应急上限超过配置限制返回

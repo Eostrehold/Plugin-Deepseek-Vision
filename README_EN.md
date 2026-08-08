@@ -7,7 +7,7 @@
 `deepseek-vision` is a native **CLIProxyAPI v7** request-preprocessing plugin. It uses a vision model already available
 through the host, turns all images in one prompt into a joint visual analysis, and lets DeepSeek continue with text.
 
-[![Release](https://img.shields.io/badge/release-v0.2.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
@@ -30,7 +30,7 @@ visual information, but never receives image blocks it cannot read.
 > setting. CLIProxyAPI continues to own model routing, credentials, protocol translation, transport, retries, and
 > provider rate-limit policy.
 
-## What v0.2.0 provides
+## What v0.3.0 provides
 
 | Capability | Behavior |
 | --- | --- |
@@ -41,6 +41,8 @@ visual information, but never receives image blocks it cannot read.
 | **Global backpressure** | `max_inflight_vision_requests` bounds process-wide work; excess groups queue instead of being rejected |
 | **Adaptive splitting** | Keeps normal multi-image prompts intact and splits in order only after an explicit host 413 |
 | **Cache and deduplication** | Coalesces identical work in one request and reuses derived analysis from a configurable TTL LRU |
+| **Ordered vision fallback** | The plugin selects `vision_model` then up to three ordered `vision_fallback_models`; CLIProxyAPI still owns transport, credentials, and provider retries |
+| **Controlled agent reanalysis** | Optionally handles declared `view_image` / `deepseek_vision_reanalyze` rich tool output; disabled by default |
 | **Non-vision model notice** | Tells DeepSeek that attachments are already analyzed and must not be reopened with `view_image` |
 | **Stable configuration lifecycle** | Empty or invalid edits do not unregister the plugin; the last valid runtime and form remain available |
 | **Full diagnostic trace** | Optionally captures context, grouping, VLM calls, cache decisions, and rewritten requests for debugging |
@@ -87,9 +89,40 @@ describe relationships between them. The rewritten item resembles:
 <per-image content, visible text, differences, and relationships>
 ```
 
+The no-reopen notice above is the default (`agent_reanalysis_enabled: false`) path. When controlled
+reanalysis is enabled and the request declares `view_image`, the marker permits a new-focus reanalysis while
+still accepting only real image blocks from rich tool output.
+
 The VLM prompt asks for faithful transcription, explicit illegible markers, and cross-image relationships. It treats
-instructions in images and user context as untrusted data. Matching Codex temporary attachment paths are also removed
-so the non-vision target model does not try to open the consumed images again.
+instructions in images and user context as untrusted data. Local attachment paths are redacted by default. They are
+retained only when `agent_reanalysis_enabled` is true, the request explicitly declares `view_image`, and the path is
+strictly under `.codex/attachments/<id>/`. Tool arguments never provide image data; only actual image blocks in the
+corresponding rich tool output are trusted.
+
+### Controlled agent reanalysis
+
+This is request rewriting inside the plugin, not a CLIProxyAPI server-side tool. It is active only when
+`agent_reanalysis_enabled: true` and the request declares the relevant tool: `view_image` or
+`deepseek_vision_reanalyze`. The latter has this exact argument schema:
+
+```json
+{
+  "attachment_ids": ["id-1"],
+  "focus": "required task focus (at most 2000 characters)",
+  "detail": "high",
+  "cache": "refresh"
+}
+```
+
+`attachment_ids` are opaque handles owned by the Agent. The plugin validates 1–16 non-empty strings but never
+resolves, reads, or treats them as image sources; only actual image blocks in matching tool output are trusted.
+`focus` is required and at most 2,000 characters; `detail` is `high` or
+`original` (default `high`); `cache` is `refresh` or `no_store` (default `refresh`). Images are accepted only from
+actual image blocks in the matching tool output, never from arguments. A request may have at most three active tail
+call IDs. A new call ID with `refresh` runs once; its idempotency identity is call ID plus decoded-image or normalized
+URL fingerprints, focus, normalized language, and the full ordered model chain (detail affects the returned image
+fingerprint; cache is not a separate identity field). An identical replay is idempotent, while a different identity
+for that ID is rejected. `no_store` may run analysis but never writes cross-request cache state.
 
 ## Support boundary
 
@@ -102,7 +135,7 @@ claude          + /v1/messages
 final Model in target_models
 ```
 
-| Scenario | v0.2.0 |
+| Scenario | v0.3.0 |
 | --- | --- |
 | URL/data-URI `input_image` in `input[].content[]` | ✅ |
 | `input_image` in array-form `function_call_output.output[]` | ✅ |
@@ -119,7 +152,7 @@ final Model in target_models
 
 ## Quick start
 
-The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.2.0 ZIP matching the
+The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.3.0 ZIP matching the
 platform where CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases);
 it contains one dynamic library. See the [installation guide](docs/installation.md) for checksum verification,
 other platforms, and upgrades.
@@ -166,13 +199,15 @@ as loaded, it is ready to use.
 | --- | ---: | --- |
 | `target_models` | `deepseek-v4-flash` | Final models eligible for visual preprocessing |
 | `vision_model` | `gpt-5.6-luna` | Vision model already configured in CLIProxyAPI |
+| `vision_fallback_models` | `[]` | Ordered vision candidates selected after the primary; at most 3, while CLIProxyAPI keeps routing/credentials |
 | `language` | `zh` | `zh`, `en`, or `auto` |
 | `max_inflight_vision_requests` | `4` | Process-wide prompt-group calls, range 1–16 |
 | `emergency_max_images_per_request` | `256` | Last-resort unique-image ceiling, not a normal batch size |
 | `request_timeout_seconds` | `120` | Total preprocessing deadline including queueing |
-| `analysis_cache_size` | `128` | Derived-analysis entries; `0` disables cross-request reuse |
+| `analysis_cache_size` | `128` | Ordinary derived-analysis entries; `0` disables ordinary cross-request reuse |
 | `analysis_cache_ttl_seconds` | `900` | Data-URI analysis TTL in seconds |
 | `analysis_url_cache_ttl_seconds` | `120` | URL-image analysis TTL in seconds |
+| `agent_reanalysis_enabled` | `false` | Enable controlled rich tool-output reanalysis; may retain strictly validated Codex attachment paths |
 | `trace_enabled` | `false` | Full plaintext diagnostic trace; enable temporarily |
 
 ### Optional manual configuration
@@ -191,8 +226,12 @@ plugins:
 See [`config.example.yaml`](config.example.yaml) and the [configuration reference](docs/configuration.md) for all
 fields, defaults, and advanced limits.
 
-Cache keys include ordered image references, the complete prompt, vision model, and normalized language. Entries store
-only an irreversible hash key and derived text, not source images or references. Reconfigure/restart begins a new cache
+Cache keys include ordered image references, the complete prompt, the full ordered vision-model chain, and normalized
+language. Entries store only an irreversible hash key and derived text, not source images or references. Ordinary work
+uses the configured TTL cache. Reanalysis defaults to `cache: refresh`: a new call ID runs and records one result,
+while an identical replay for that identity is served idempotently; `cache: no_store` neither reads nor writes
+cross-request cache state. `analysis_cache_size: 0` disables only the ordinary analysis LRU; the separate bounded,
+generation-local call-ID idempotency cache still handles refresh replays. Reconfigure/restart begins a new cache
 generation.
 
 ## Errors and diagnostics
@@ -204,10 +243,14 @@ Eligible image requests fail closed:
 | `400` | Invalid Responses JSON or supported input structure |
 | `413` | Request body, image reference, ABI admission, or unique-image emergency ceiling (default 256) exceeded |
 | `422` | Unsupported image source such as `file_id` only |
-| `502` | Vision-model failure, timeout, invalid response, or final rewrite verification failure |
+| `502` | Vision fallback exhaustion, timeout, invalid response, or final rewrite verification failure; only a safe summary is returned |
 
 Ordinary 413 errors emit a host `host.log` warning with the limit kind, actual value, maximum, and configuration
 generation, never request or image content.
+Structured 502 bodies contain an opaque `error_id`, ordered `attempts` with only `model`, `category`, optional
+`upstream_status`, and `retryable`, plus the fixed `vision_fallback_exhausted` code. They never include provider
+response text, complete URLs/data URIs, credentials, or local paths; host executor failures remain the generic
+`host_executor_error` category.
 
 For difficult multi-turn failures, temporarily set `trace_enabled: true`. It writes:
 
@@ -227,11 +270,11 @@ Native builds require Go 1.26, CGO, a platform C compiler, Python, Git, and eith
 `objdump` (Windows). The script targets the current host GOOS/GOARCH by default:
 
 ```bash
-VERSION=0.2.0 ./scripts/package.sh
+VERSION=0.3.0 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-This produces reproducible `dist/deepseek-vision_0.2.0_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
+This produces reproducible `dist/deepseek-vision_0.3.0_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
 the normal checks, regular pushes and PRs build only the Linux amd64 compatibility package:
 
 ```bash
@@ -242,20 +285,25 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Manually run the Release workflow in GitHub Actions with version `0.2.0` to perform the full six-runner build,
+Manually run the Release workflow in GitHub Actions with version `0.3.0` to perform the full six-runner build,
 aggregate six ZIPs and one checksum file, and attach them to a Draft Release. A maintainer publishes it only after
 inspection. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations
 
-- v0.2.0 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
+- v0.3.0 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
   plugins, but this release does not publish an asset that has not passed native FreeBSD acceptance.
 - Only the exact Responses, Chat Completions, and Anthropic Messages routes are rewritten.
 - VLM preprocessing completes before streaming, so it adds time to first byte.
 - The cache is process-local and is not shared across CLIProxyAPI instances.
+- `no_store` reanalysis never leaves cross-request cache state; `refresh` replays idempotently only for the same call
+  ID and identity fingerprints/focus/language/model chain. `analysis_cache_size: 0` leaves the separate refresh
+  idempotency cache available.
+- Agent reanalysis is disabled by default. When enabled, paths are retained only for declared `view_image` and only
+  under strictly validated `.codex/attachments/<id>/` directories; missing image blocks are never fabricated.
 - Remote URLs are fetched by the selected vision provider; deployments still need DNS, egress, and allowlist policy.
-- `deepseek-v4-pro` is not a v0.2.0 release-acceptance target.
+- `deepseek-v4-pro` is not a v0.3.0 release-acceptance target.
 
 See [limitations](docs/limitations.md) and [security](docs/security.md) for the full boundary.
 
