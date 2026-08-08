@@ -211,7 +211,7 @@ as loaded, it is ready to use.
 
 | Field | Default | Purpose |
 | --- | ---: | --- |
-| `target_models` | `deepseek-v4-flash` | Final models eligible for visual preprocessing |
+| `target_models` | `["deepseek-v4-flash"]` | Final models eligible for visual preprocessing |
 | `vision_model` | `gpt-5.6-luna` | Vision model already configured in CLIProxyAPI |
 | `vision_fallback_models` | `[]` | Ordered vision candidates selected after the primary; at most 3, while CLIProxyAPI keeps routing/credentials |
 | `language` | `zh` | `zh`, `en`, or `auto` |

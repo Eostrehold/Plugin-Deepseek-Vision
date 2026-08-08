@@ -194,8 +194,9 @@ func pluginRegistration() registration {
 			GitHubRepository: "https://github.com/zesuy/Plugin-Deepseek-Vision",
 			Logo:             "",
 			ConfigFields: []pluginapi.ConfigField{
+				{Name: "target_models", Type: pluginapi.ConfigFieldTypeArray, Description: "需要视觉预处理的最终文本模型 JSON 数组。默认值 / JSON array of final text models eligible for vision preprocessing. Default: [\"deepseek-v4-flash\"]."},
 				{Name: "vision_model", Type: pluginapi.ConfigFieldTypeString, Description: "宿主中已配置的视觉模型名称。默认值 / Host vision model. Default: gpt-5.6-luna."},
-				{Name: "vision_fallback_models", Type: pluginapi.ConfigFieldTypeArray, Description: "主视觉模型失败后按顺序尝试的宿主模型，最多 3 个。默认空。/ Ordered host vision fallback models, maximum 3. Default: empty."},
+				{Name: "vision_fallback_models", Type: pluginapi.ConfigFieldTypeArray, Description: "主视觉模型失败后按顺序尝试的宿主模型 JSON 数组，最多 3 个。默认空。/ JSON array of ordered host vision fallback models, maximum 3. Default: empty."},
 				{Name: "language", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"zh", "en", "auto"}, Description: "视觉分析语言：zh 中文、en English、auto 跟随请求。默认值 / Default: zh."},
 				{Name: "max_inflight_vision_requests", Type: pluginapi.ConfigFieldTypeInteger, Description: "插件全局同时在途的宿主视觉请求数；多余任务排队。范围 1–16，默认 4。/ Global in-flight host vision requests; excess work queues. Range 1–16, default 4."},
 				{Name: "emergency_max_images_per_request", Type: pluginapi.ConfigFieldTypeInteger, Description: "单个客户端请求的唯一图片应急上限，仅防御异常负载。范围 16–1024，默认 256。/ Emergency unique-image ceiling per client request. Range 16–1024, default 256."},

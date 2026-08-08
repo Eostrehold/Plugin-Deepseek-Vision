@@ -32,10 +32,11 @@ func TestRegisterEnvelopeAndCapabilities(t *testing.T) {
 	if result.SchemaVersion != 2 || !result.Capabilities.RequestInterceptor || result.Metadata.Name != pluginName {
 		t.Fatalf("registration = %#v", result)
 	}
-	if len(result.Metadata.ConfigFields) != 11 {
-		t.Fatalf("config field count = %d, want 11 fields", len(result.Metadata.ConfigFields))
+	if len(result.Metadata.ConfigFields) != 12 {
+		t.Fatalf("config field count = %d, want 12 fields", len(result.Metadata.ConfigFields))
 	}
 	wantFields := map[string]pluginapi.ConfigFieldType{
+		"target_models":                    pluginapi.ConfigFieldTypeArray,
 		"vision_model":                     pluginapi.ConfigFieldTypeString,
 		"vision_fallback_models":           pluginapi.ConfigFieldTypeArray,
 		"language":                         pluginapi.ConfigFieldTypeEnum,

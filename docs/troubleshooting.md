@@ -68,10 +68,10 @@ curl -fsS -H 'Authorization: Bearer <management-key>' \
       | {registered, effective_enabled, config_fields}'
 ```
 
-A current binary reports eleven fields: primary model, ordered fallback models,
-language, global in-flight vision requests, emergency image ceiling, total
-timeout, three cache controls, the agent reanalysis switch, and the plaintext
-trace switch.
+A current binary reports twelve fields: target models, primary model, ordered
+fallback models, language, global in-flight vision requests, emergency image
+ceiling, total timeout, three cache controls, the agent reanalysis switch, and
+the plaintext trace switch.
 If `registered` remains `false`, restart
 CLIProxyAPI after replacing the library and inspect the plugin registration
 error in the host log; an old binary or failed ABI load cannot publish field
