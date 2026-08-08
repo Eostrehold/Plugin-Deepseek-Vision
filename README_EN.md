@@ -6,15 +6,17 @@
 
 `deepseek-vision` is a native **CLIProxyAPI v7** request-preprocessing plugin. It uses a vision model already available
 through the host, turns all images in one prompt into a joint visual analysis, and lets DeepSeek continue with text.
+An Agent can also revisit the same image with a new focus and obtain a fresh task-specific analysis.
 
 [![Release](https://img.shields.io/badge/release-v0.3.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
+[![Plugin Store](https://img.shields.io/badge/Plugin_Store-Official_Source-f59e0b)](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store)
 [![Platforms](https://img.shields.io/badge/platforms-6-4C8BF5)](docs/limitations.md)
 [![License](https://img.shields.io/github/license/Zesuy/Plugin-Deepseek-Vision)](LICENSE)
 
-[简体中文](README.md) · **English** · [Installation](docs/installation.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md)
+[简体中文](README.md) · **English** · [Official plugin source](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store) · [Installation](docs/installation.md) · [Configuration](docs/configuration.md) · [Troubleshooting](docs/troubleshooting.md)
 
 </div>
 
@@ -22,7 +24,7 @@ through the host, turns all images in one prompt into a joint visual analysis, a
 
 Text-only DeepSeek models cannot consume `input_image` blocks from OpenAI Responses requests. After CLIProxyAPI has
 completed authentication, alias resolution, and final-model selection, this plugin asks a vision model to understand
-the images and transparently replaces them with plain-text analysis. DeepSeek receives the original task plus the
+the images and replaces them with plain-text analysis. DeepSeek receives the original task plus the
 visual information, but never receives image blocks it cannot read.
 
 > [!IMPORTANT]
@@ -34,18 +36,11 @@ visual information, but never receives image blocks it cannot read.
 
 | Capability | Behavior |
 | --- | --- |
-| **Native host execution** | Calls `host.model.execute` with the configured `vision_model`, reusing host routing and credentials |
-| **Three downstream protocols** | Natively handles images in OpenAI Responses, Chat Completions, and Anthropic Messages requests |
-| **Prompt-level multi-image analysis** | Sends ordered images from one message or tool result in one VLM call, preserving comparisons and progression |
-| **Atomic transparent rewrite** | Replaces images with numbered markers and one joint analysis only after every group succeeds |
-| **Global backpressure** | `max_inflight_vision_requests` bounds process-wide work; excess groups queue instead of being rejected |
-| **Adaptive splitting** | Keeps normal multi-image prompts intact and splits in order only after an explicit host 413 |
-| **Cache and deduplication** | Coalesces identical work in one request and reuses derived analysis from a configurable TTL LRU |
-| **Ordered vision fallback** | The plugin selects `vision_model` then up to three ordered `vision_fallback_models`; CLIProxyAPI still owns transport, credentials, and provider retries |
-| **Controlled agent reanalysis** | Optionally handles declared `view_image` / `deepseek_vision_reanalyze` rich tool output; disabled by default |
-| **Non-vision model notice** | Tells DeepSeek that attachments are already analyzed and must not be reopened with `view_image` |
-| **Stable configuration lifecycle** | Empty or invalid edits do not unregister the plugin; the last valid runtime and form remain available |
-| **Full diagnostic trace** | Optionally captures context, grouping, VLM calls, cache decisions, and rewritten requests for debugging |
+| **Controlled Agent reanalysis** | An Agent can revisit the same image with a new focus through declared `view_image` / `deepseek_vision_reanalyze` rich tool output |
+| **Ordered vision fallback** | Tries `vision_model` and `vision_fallback_models` in order and returns safe, distinguishable attempt summaries on failure |
+| **Native host execution** | Reuses CLIProxyAPI `host.model.execute`, routing, and credentials without another endpoint or API key |
+| **Three protocols and multi-image context** | Supports Responses, Chat, and Claude while jointly analyzing ordered images from one prompt |
+| **Explicit cache semantics** | Ordinary requests may reuse derived results; focused analysis supports `refresh`, `no_store`, and idempotent call-ID replay |
 
 ## In action
 
@@ -54,8 +49,15 @@ visual information, but never receives image blocks it cannot read.
 | <img src="docs/assets/full-context-model-switch.png" alt="DeepSeek continues with visual context after a model switch" width="680"> | <img src="docs/assets/frontend-ui-analysis.png" alt="Diagnosing wrapped front-end action buttons from a screenshot" width="680"> |
 | After switching to `deepseek-v4-flash`, historical images are converted into visual context before the target model runs. | The vision model identifies the table, button groups, and wrapping; DeepSeek can then continue into the relevant CSS. |
 
-These are real sessions. See the [raw vision-model explanations](docs/examples/trace-vision-output.md) preserved by
-the diagnostic trace, without manual rewriting. In same-host A/B probes with these images, the task-focused prompt
+### A focused second look at the same image
+
+<img src="docs/assets/agent-view-image-reanalysis.jpg" alt="Codex uses view_image to reanalyze the same image with a new focus" width="100%">
+
+The first pass answered questions about the page structure and icons. The user then asked specifically about typography
+and the color of the mirror-sync indicator. The Agent invoked `view_image` for a task-specific analysis and recovered
+details that the broad first pass had not covered instead of reusing the old result.
+
+These are real sessions. In same-host A/B probes with these images, the task-focused prompt
 and low-reasoning vision request reduced the VLM stage from 27.8s to 7.4s and from 49.1s to 16.6s while retaining
 automatic image detail. `detail=low` was faster but omitted small text and the security alert, so it was rejected.
 
@@ -152,10 +154,22 @@ final Model in target_models
 
 ## Quick start
 
-The plugin is not yet listed in the official CLIProxyAPI plugin registry. Download the v0.3.0 ZIP matching the
-platform where CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases);
-it contains one dynamic library. See the [installation guide](docs/installation.md) for checksum verification,
-other platforms, and upgrades.
+### Install from the official plugin source (recommended)
+
+`deepseek-vision` is listed in
+[CLIProxyAPI-Plugins-Store](https://github.com/router-for-me/CLIProxyAPI-Plugins-Store). Open Plugin Store in
+Management HTML, search for **DeepSeek Vision**, and install, update, or manage it there.
+
+<img src="docs/assets/official-plugin-store.png" alt="DeepSeek Vision in the official CLIProxyAPI plugin store" width="100%">
+
+The store correctly labels this project as a third-party plugin; review its source and permissions before installation.
+The official source provides indexing and distribution, while this repository continues to own the code and releases.
+
+### Install manually from GitHub Releases
+
+If the installed CLIProxyAPI version does not expose Plugin Store yet, download the v0.3.0 ZIP for the platform where
+CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases). It contains one
+dynamic library. See the [installation guide](docs/installation.md) for checksums, other platforms, and upgrades.
 
 ### Docker deployment
 
@@ -208,7 +222,6 @@ as loaded, it is ready to use.
 | `analysis_cache_ttl_seconds` | `900` | Data-URI analysis TTL in seconds |
 | `analysis_url_cache_ttl_seconds` | `120` | URL-image analysis TTL in seconds |
 | `agent_reanalysis_enabled` | `false` | Enable controlled rich tool-output reanalysis; may retain strictly validated Codex attachment paths |
-| `trace_enabled` | `false` | Full plaintext diagnostic trace; enable temporarily |
 
 ### Optional manual configuration
 
@@ -234,7 +247,7 @@ cross-request cache state. `analysis_cache_size: 0` disables only the ordinary a
 generation-local call-ID idempotency cache still handles refresh replays. Reconfigure/restart begins a new cache
 generation.
 
-## Errors and diagnostics
+## Error behavior
 
 Eligible image requests fail closed:
 
@@ -251,18 +264,6 @@ Structured 502 bodies contain an opaque `error_id`, ordered `attempts` with only
 `upstream_status`, and `retryable`, plus the fixed `vision_fallback_exhausted` code. They never include provider
 response text, complete URLs/data URIs, credentials, or local paths; host executor failures remain the generic
 `host_executor_error` category.
-
-For difficult multi-turn failures, temporarily set `trace_enabled: true`. It writes:
-
-```text
-logs/deepseek-vision-trace/events.jsonl
-logs/deepseek-vision-trace/requests/<request-bundle>/
-```
-
-Each bundle includes the exact inbound body, image URLs/data URIs, discovery positions, prompt groups, cache plan, VLM
-requests/responses, parsed output, rewritten body, and final status. Credential-like headers and metadata are redacted,
-but image and conversation data remain plaintext. Protect the directory, disable tracing after reproduction, and remove
-the retained files. Docker deployments must mount `/CLIProxyAPI/logs` to the host.
 
 ## Build and release
 
@@ -312,11 +313,11 @@ See [limitations](docs/limitations.md) and [security](docs/security.md) for the 
 | Document | Contents |
 | --- | --- |
 | [Installation](docs/installation.md) | Manual / Store / Docker install, upgrade, and rollback |
-| [Configuration](docs/configuration.md) | Fields, defaults, validation, cache, and trace |
+| [Configuration](docs/configuration.md) | Fields, defaults, validation, and cache |
 | [Contracts](docs/contracts.md) | ABI, three downstream rewrite protocols, and error contracts |
 | [Architecture](docs/architecture.md) | Data flow, module ownership, and host boundary |
 | [Security](docs/security.md) | Credentials, network, prompt injection, and failure safety |
-| [Troubleshooting](docs/troubleshooting.md) | Registration, configuration, 413 / 502, trace, and container permissions |
+| [Troubleshooting](docs/troubleshooting.md) | Registration, configuration, 413 / 502, and container permissions |
 | [Testing](docs/testing.md) | Unit, race, package, and host E2E validation |
 | [Changelog](CHANGELOG.md) | Release contents and validated boundary |
 
