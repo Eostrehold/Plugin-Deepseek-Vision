@@ -66,14 +66,15 @@ func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt 
 		}
 	}
 	active := make(map[string]struct{})
+	tailStart := terminalResponsesToolRoundStart(items)
 	for i := range groups {
-		if groups[i].Source != "function_call_output" || groups[i].InputIndex <= lastUser {
+		if groups[i].Source != "function_call_output" || groups[i].InputIndex <= lastUser || groups[i].InputIndex < tailStart {
 			continue
 		}
 		item, _ := items[groups[i].InputIndex].(map[string]any)
 		callID, _ := item["call_id"].(string)
 		call, ok := calls[callID]
-		if !ok || call.index <= lastUser || call.index >= groups[i].InputIndex {
+		if !ok || call.index < tailStart || call.index >= groups[i].InputIndex {
 			continue
 		}
 		inferredFocus := groups[i].Prompt
@@ -129,14 +130,15 @@ func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Optio
 		}
 	}
 	active := make(map[string]struct{})
+	tailStart := terminalChatToolMessageStart(messages)
 	for i := range groups {
-		if groups[i].Source != "function_call_output" || groups[i].InputIndex <= lastUser {
+		if groups[i].Source != "function_call_output" || groups[i].InputIndex <= lastUser || groups[i].InputIndex < tailStart {
 			continue
 		}
 		message, _ := messages[groups[i].InputIndex].(map[string]any)
 		callID, _ := message["tool_call_id"].(string)
 		call, ok := calls[callID]
-		if !ok || call.index <= lastUser || call.index >= groups[i].InputIndex {
+		if !ok || call.index != tailStart-1 || call.index >= groups[i].InputIndex {
 			continue
 		}
 		inferredFocus := groups[i].Prompt
@@ -195,9 +197,10 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 		}
 	}
 	active := make(map[string]struct{})
+	tailMessage := terminalClaudeToolResultMessage(messages)
 	for i := range groups {
 		group := &groups[i]
-		if group.Source != "tool_result" || group.InputIndex <= lastOrdinaryUser || group.container.toolResultIndex < 0 {
+		if group.Source != "tool_result" || group.InputIndex <= lastOrdinaryUser || group.InputIndex != tailMessage || group.container.toolResultIndex < 0 {
 			continue
 		}
 		message, _ := messages[group.InputIndex].(map[string]any)
@@ -205,7 +208,7 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 		block, _ := content[group.container.toolResultIndex].(map[string]any)
 		callID, _ := block["tool_use_id"].(string)
 		call, ok := calls[callID]
-		if !ok || call.index <= lastOrdinaryUser || call.index >= group.InputIndex {
+		if !ok || call.index != tailMessage-1 || call.index >= group.InputIndex {
 			continue
 		}
 		inferredFocus := group.Prompt
@@ -228,10 +231,29 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 func buildToolContext(call toolCall, inferredFocus string, maxFocus int) (*ToolContext, error) {
 	ctx := &ToolContext{Name: call.name, CallID: call.callID, Focus: truncateRunes(strings.TrimSpace(inferredFocus), maxFocus), Detail: "high", CacheMode: "refresh", Active: true}
 	if call.name == viewImageToolName {
-		if args, err := toolArgumentsObject(call.arguments); err == nil {
-			if detail, ok := args["detail"].(string); ok && (detail == "high" || detail == "original") {
-				ctx.Detail = detail
+		args, err := toolArgumentsObject(call.arguments)
+		if err != nil {
+			return nil, fmt.Errorf("view_image arguments must be a JSON object")
+		}
+		for key := range args {
+			switch key {
+			case "path", "detail":
+			default:
+				return nil, fmt.Errorf("view_image arguments contain unsupported field %q", key)
 			}
+		}
+		if path, exists := args["path"]; exists {
+			value, ok := path.(string)
+			if !ok || strings.TrimSpace(value) == "" {
+				return nil, fmt.Errorf("view_image path must be a non-empty string")
+			}
+		}
+		if detail, exists := args["detail"]; exists {
+			value, ok := detail.(string)
+			if !ok || (value != "high" && value != "original") {
+				return nil, fmt.Errorf("view_image detail must be high or original")
+			}
+			ctx.Detail = value
 		}
 		return ctx, nil
 	}
@@ -279,6 +301,9 @@ func buildToolContext(call toolCall, inferredFocus string, maxFocus int) (*ToolC
 
 func toolArgumentsObject(raw any) (map[string]any, error) {
 	if object, ok := raw.(map[string]any); ok {
+		if object == nil {
+			return nil, fmt.Errorf("arguments are not a JSON object")
+		}
 		return object, nil
 	}
 	text, ok := raw.(string)
@@ -289,7 +314,55 @@ func toolArgumentsObject(raw any) (map[string]any, error) {
 	if err := json.Unmarshal([]byte(text), &object); err != nil {
 		return nil, err
 	}
+	if object == nil {
+		return nil, fmt.Errorf("arguments are not a JSON object")
+	}
 	return object, nil
+}
+
+func terminalResponsesToolRoundStart(items []any) int {
+	start := len(items)
+	for start > 0 {
+		item, _ := items[start-1].(map[string]any)
+		typ, _ := item["type"].(string)
+		if typ != "function_call" && typ != "function_call_output" {
+			break
+		}
+		start--
+	}
+	return start
+}
+
+func terminalChatToolMessageStart(messages []any) int {
+	start := len(messages)
+	for start > 0 {
+		message, _ := messages[start-1].(map[string]any)
+		if role, _ := message["role"].(string); role != "tool" {
+			break
+		}
+		start--
+	}
+	return start
+}
+
+func terminalClaudeToolResultMessage(messages []any) int {
+	if len(messages) == 0 {
+		return -1
+	}
+	index := len(messages) - 1
+	message, _ := messages[index].(map[string]any)
+	role, _ := message["role"].(string)
+	content, _ := message["content"].([]any)
+	if role != "user" || len(content) == 0 {
+		return -1
+	}
+	for _, raw := range content {
+		block, _ := raw.(map[string]any)
+		if typ, _ := block["type"].(string); typ != "tool_result" {
+			return -1
+		}
+	}
+	return index
 }
 
 func latestResponsesUserFocusBefore(items []any, before, maxFocus int) string {
@@ -386,19 +459,40 @@ func declaredResponsesTools(root map[string]any) map[string]bool {
 	tools, _ := root["tools"].([]any)
 	for _, raw := range tools {
 		tool, _ := raw.(map[string]any)
-		name, _ := tool["name"].(string)
-		if name == "" {
-			if fn, ok := tool["function"].(map[string]any); ok {
-				name, _ = fn["name"].(string)
-			}
+		if typ, _ := tool["type"].(string); typ != "function" {
+			continue
 		}
+		name, _ := tool["name"].(string)
 		declared[name] = name != ""
 	}
 	return declared
 }
 
-func declaredChatTools(root map[string]any) map[string]bool   { return declaredResponsesTools(root) }
-func declaredClaudeTools(root map[string]any) map[string]bool { return declaredResponsesTools(root) }
+func declaredChatTools(root map[string]any) map[string]bool {
+	declared := make(map[string]bool)
+	tools, _ := root["tools"].([]any)
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		if typ, _ := tool["type"].(string); typ != "function" {
+			continue
+		}
+		fn, _ := tool["function"].(map[string]any)
+		name, _ := fn["name"].(string)
+		declared[name] = name != ""
+	}
+	return declared
+}
+
+func declaredClaudeTools(root map[string]any) map[string]bool {
+	declared := make(map[string]bool)
+	tools, _ := root["tools"].([]any)
+	for _, raw := range tools {
+		tool, _ := raw.(map[string]any)
+		name, _ := tool["name"].(string)
+		declared[name] = name != ""
+	}
+	return declared
+}
 
 func validateActiveReanalysisCount(active map[string]struct{}) error {
 	if len(active) <= maxActiveReanalysisCalls {

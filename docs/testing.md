@@ -113,8 +113,10 @@ passthrough.
 Set `LIVE_USE_CODEX=1` to add a genuine ephemeral `codex exec -i` run through
 the temporary local host. This extra layer requires the target text model to
 obey the requested `view_image` tool call, so it is deliberately not a stable
-release or CI gate. The deterministic Codex-shaped phase remains authoritative
-for the protocol contract.
+release or CI gate. It also requires `timeout` and `setsid`; the latter isolates
+Codex and any background marketplace children so cleanup can terminate only
+that test process group. The deterministic Codex-shaped phase remains
+authoritative for the protocol contract.
 
 The script writes provider keys only to a mode-0600 temporary CLIProxyAPI
 configuration, starts the host without those keys in its process environment,

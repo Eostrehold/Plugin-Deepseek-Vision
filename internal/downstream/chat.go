@@ -21,14 +21,6 @@ func (chatAdapter) Discover(body []byte, options ...Options) (Plan, error) {
 	return discoverChat(body, options...)
 }
 
-// DiscoverChat is the package-level entry point for callers that need the
-// concrete Chat plan (for example planner tests). Runtime callers should
-// normally use Match and the Adapter interface so route selection remains
-// exact.
-func DiscoverChat(body []byte, options ...Options) (*chatPlan, error) {
-	return discoverChat(body, options...)
-}
-
 type chatPlan struct {
 	original                  []byte
 	root                      any

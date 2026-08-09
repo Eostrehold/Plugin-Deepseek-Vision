@@ -148,7 +148,7 @@ openai-compatibility:
 pathlib.Path(path).write_text(text, encoding="utf-8")
 PY
 
-(cd "$TMP" && "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
+(cd "$TMP" && exec "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
 HOST_PID=$!
 BASE="http://127.0.0.1:$HOST_PORT"
 

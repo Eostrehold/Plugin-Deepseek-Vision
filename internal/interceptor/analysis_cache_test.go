@@ -3,7 +3,9 @@ package interceptor
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -85,6 +87,79 @@ func TestIdempotencyCacheReservesAtomically(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("identical waiter did not wake")
+	}
+}
+
+func TestIdempotencyCacheRejectsWhenAllCapacityIsPending(t *testing.T) {
+	cache := newIdempotencyCache(2)
+	first, _, _, err := cache.Reserve(context.Background(), "call_1", "identity_1")
+	if err != nil || first == nil {
+		t.Fatalf("first reservation=%#v err=%v", first, err)
+	}
+	second, _, _, err := cache.Reserve(context.Background(), "call_2", "identity_2")
+	if err != nil || second == nil {
+		t.Fatalf("second reservation=%#v err=%v", second, err)
+	}
+	if _, _, _, err := cache.Reserve(context.Background(), "call_3", "identity_3"); !errors.Is(err, errIdempotencyCacheFull) {
+		t.Fatalf("full cache err=%v", err)
+	}
+	if got := cache.Size(); got != 2 {
+		t.Fatalf("pending cache size=%d, want 2", got)
+	}
+
+	cache.Complete(first, "analysis", nil, time.Minute)
+	third, _, hit, err := cache.Reserve(context.Background(), "call_3", "identity_3")
+	if err != nil || third == nil || hit {
+		t.Fatalf("third reservation=%#v hit=%v err=%v", third, hit, err)
+	}
+	if got := cache.Size(); got != 2 {
+		t.Fatalf("cache size after completed eviction=%d, want 2", got)
+	}
+	cache.Complete(second, "", errIdempotencyReservationAborted, 0)
+	cache.Complete(third, "", errIdempotencyReservationAborted, 0)
+}
+
+func TestIdempotencyCacheConcurrentPendingReservationsStayBounded(t *testing.T) {
+	const capacity = 4
+	const callers = 32
+	cache := newIdempotencyCache(capacity)
+	start := make(chan struct{})
+	type result struct {
+		reservation *idempotencyReservation
+		err         error
+	}
+	results := make(chan result, callers)
+	var wg sync.WaitGroup
+	for i := 0; i < callers; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			<-start
+			reservation, _, _, err := cache.Reserve(context.Background(), fmt.Sprintf("call_%d", index), fmt.Sprintf("identity_%d", index))
+			results <- result{reservation: reservation, err: err}
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+	close(results)
+
+	reservations := make([]*idempotencyReservation, 0, capacity)
+	full := 0
+	for got := range results {
+		switch {
+		case got.err == nil && got.reservation != nil:
+			reservations = append(reservations, got.reservation)
+		case errors.Is(got.err, errIdempotencyCacheFull):
+			full++
+		default:
+			t.Fatalf("unexpected reservation result: %#v", got)
+		}
+	}
+	if len(reservations) != capacity || full != callers-capacity || cache.Size() != capacity {
+		t.Fatalf("reservations=%d full=%d size=%d", len(reservations), full, cache.Size())
+	}
+	for _, reservation := range reservations {
+		cache.Complete(reservation, "", errIdempotencyReservationAborted, 0)
 	}
 }
 

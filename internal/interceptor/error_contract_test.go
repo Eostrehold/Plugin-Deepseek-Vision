@@ -109,6 +109,71 @@ func TestStructuredVisionFailureContractsAndDiagnosticCorrelation(t *testing.T) 
 	}
 }
 
+func TestUnsafeAttemptModelNamesAreRedactedFromResponseAndDiagnostic(t *testing.T) {
+	failure := &vision.Failure{Code: "vision_fallback_exhausted", Attempts: []vision.AttemptFailure{
+		{Model: "https://user:secret@example.com/v1", Category: vision.FailureUpstreamHTTP, UpstreamStatus: 503, Retryable: true},
+		{Model: "/home/demo/.codex/attachments/private/model", Category: vision.FailureInvalidResponse, Retryable: true},
+		{Model: "provider/safe-model:v2", Category: vision.FailureEmptyResponse, Retryable: true},
+	}}
+	var diagnosticFields map[string]any
+	r := NewRuntime(func(*config.Config) (vision.Analyzer, error) { return &failureAnalyzer{failure: failure}, nil }, func(_, _, _ string, fields map[string]any) {
+		diagnosticFields = fields
+	})
+	r.Reconfigure(testConfig(t))
+	defer r.Shutdown()
+	body := `{"input":[{"role":"user","content":[{"type":"input_image","image_url":"https://example.com/image.png"}]}]}`
+	resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body))
+	if err != nil || !resp.Terminate || resp.StatusCode != 502 {
+		t.Fatalf("response=%#v err=%v", resp, err)
+	}
+	responseText := string(resp.ResponseBody)
+	diagnosticJSON, _ := json.Marshal(diagnosticFields)
+	for _, encoded := range []string{responseText, string(diagnosticJSON)} {
+		if strings.Contains(encoded, "user:secret") || strings.Contains(encoded, "/home/demo") || strings.Contains(encoded, ".codex/attachments") {
+			t.Fatalf("unsafe model leaked: %s", encoded)
+		}
+		if strings.Count(encoded, `"model":"[redacted]"`) != 2 || !strings.Contains(encoded, `"model":"provider/safe-model:v2"`) {
+			t.Fatalf("attempt model sanitization mismatch: %s", encoded)
+		}
+	}
+}
+
+func TestSafePublicModelLabel(t *testing.T) {
+	for _, model := range []string{"gpt-5.6-luna", "provider/safe-model:v2", "gpt-4.1:2025", "models/gemini_3.5-flash", "模型/视觉-v2"} {
+		if got := safePublicModelLabel(model); got != model {
+			t.Errorf("safe model %q redacted as %q", model, got)
+		}
+	}
+	for _, model := range []string{
+		"https://user:secret@example.com/v1",
+		"/home/demo/private-model",
+		`C:\Users\demo\private-model`,
+		"../private-model",
+		"provider/model?api_key=secret",
+		"sk-secret-value",
+		"github_pat_secret",
+		"file:/home/demo/private-model",
+		"api_key:secret",
+		"provider/sk-secret",
+		"provider/file:/home/demo/private-model",
+		"provider/C:/Users/demo/private-model",
+		"provider//home/demo/private-model",
+		"provider/file:home/demo/private-model",
+		"provider/http:localhost/internal-model",
+		"provider/./home/private-model",
+		"provider/.hidden/private-model",
+		"192.168.5.220:8317",
+		"localhost:8317",
+		"example.com:443",
+		"provider/192.168.5.220:8317",
+		strings.Repeat("x", 129),
+	} {
+		if got := safePublicModelLabel(model); got != "[redacted]" {
+			t.Errorf("unsafe model %q exposed as %q", model, got)
+		}
+	}
+}
+
 type orderedFailureAnalyzer struct {
 	mu sync.Mutex
 }

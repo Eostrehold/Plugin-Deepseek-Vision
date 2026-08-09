@@ -74,6 +74,10 @@ if [[ "$LIVE_USE_CODEX" == "1" ]] && ! command -v timeout >/dev/null 2>&1; then
   echo "LIVE_USE_CODEX=1 requires timeout on PATH" >&2
   exit 2
 fi
+if [[ "$LIVE_USE_CODEX" == "1" ]] && ! command -v setsid >/dev/null 2>&1; then
+  echo "LIVE_USE_CODEX=1 requires setsid on PATH" >&2
+  exit 2
+fi
 
 normalize_openai_base() {
   python3 - "$1" <<'PY'
@@ -101,6 +105,7 @@ PLUGIN_DIR="$TMP/plugins"
 CONFIG="$TMP/config.yaml"
 HOST_PID=""
 FAULT_PID=""
+CODEX_SESSION_PID=""
 mkdir -p "$PLUGIN_DIR/linux/amd64" "$TMP/auth" "$TMP/codex-work"
 
 redact_text_files() {
@@ -148,9 +153,27 @@ for path in root.rglob("*"):
 PY
 }
 
+terminate_codex_session() {
+  local session_pid=${CODEX_SESSION_PID:-}
+  [[ -n "$session_pid" ]] || return 0
+  if kill -0 -- "-$session_pid" 2>/dev/null; then
+    kill -TERM -- "-$session_pid" 2>/dev/null || true
+    for _ in {1..50}; do
+      kill -0 -- "-$session_pid" 2>/dev/null || break
+      sleep 0.1
+    done
+    if kill -0 -- "-$session_pid" 2>/dev/null; then
+      kill -KILL -- "-$session_pid" 2>/dev/null || true
+    fi
+  fi
+  wait "$session_pid" 2>/dev/null || true
+  CODEX_SESSION_PID=""
+}
+
 cleanup() {
   local rc=$?
   trap - EXIT INT TERM
+  terminate_codex_session
   if [[ -n "$HOST_PID" ]] && kill -0 "$HOST_PID" 2>/dev/null; then
     kill "$HOST_PID" 2>/dev/null || true
   fi
@@ -356,7 +379,7 @@ pathlib.Path(path).write_text(json.dumps(config, ensure_ascii=False, indent=2) +
 PY
 chmod 600 "$CONFIG"
 
-(cd "$TMP" && env -u DEEPSEEK_API_KEY -u GPT_API_KEY "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
+(cd "$TMP" && exec env -u DEEPSEEK_API_KEY -u GPT_API_KEY "$TMP/cliproxy" -config "$CONFIG" -local-model >"$TMP/host.log" 2>&1) &
 HOST_PID=$!
 BASE="http://127.0.0.1:$HOST_PORT"
 
@@ -608,6 +631,10 @@ text = f'''model = {json.dumps(model)}
 model_provider = "live_proxy"
 approval_policy = "never"
 sandbox_mode = "read-only"
+check_for_update_on_startup = false
+
+[features]
+remote_plugin = false
 
 [model_providers.live_proxy]
 name = "Temporary local CLIProxyAPI"
@@ -628,10 +655,13 @@ PY
   set +e
   env -u DEEPSEEK_API_KEY -u GPT_API_KEY \
     CODEX_HOME="$CODEX_HOME" LIVE_PROXY_API_KEY=live-client-key \
-    timeout "$TIMEOUT" codex exec --ephemeral --json --skip-git-repo-check \
+    setsid timeout --kill-after=5s "$TIMEOUT" codex exec --ephemeral --json --skip-git-repo-check \
       -s read-only -C "$TMP/codex-work" "$CODEX_PROMPT" -i "$IMAGE_PATH" \
-      >"$TMP/codex.jsonl" 2>"$TMP/codex.log"
+      >"$TMP/codex.jsonl" 2>"$TMP/codex.log" &
+  CODEX_SESSION_PID=$!
+  wait "$CODEX_SESSION_PID"
   codex_rc=$?
+  terminate_codex_session
   set -e
   if [[ "$codex_rc" != "0" ]]; then
     echo "codex exec failed with exit $codex_rc" >&2

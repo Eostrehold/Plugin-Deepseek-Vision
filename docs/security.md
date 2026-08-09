@@ -15,7 +15,9 @@
   focus, normalized language, and the full ordered model chain (detail affects
   the returned image fingerprint; cache mode is not a separate identity field).
   `analysis_cache_size: 0` disables only the ordinary analysis LRU; the separate
-  bounded generation-local call-ID idempotency cache remains available.
+  bounded generation-local call-ID idempotency cache remains available. Pending
+  reservations count toward that hard bound; a new call ID fails safely when
+  every slot is occupied instead of growing the cache without limit.
 - Package scripts scan source and generated archives for obvious key markers and
   fail closed. This is a guardrail, not a replacement for organization-wide
   secret scanning.
@@ -71,6 +73,9 @@ complete image references, and local paths are never returned. Fallbacks are
 limited to retryable HTTP 408/429/5xx, attempt timeouts, invalid/empty/oversized
 results, or generic host executor errors; parent cancellation, rewrite failure,
 and other non-retryable conditions stop processing.
+Configured model labels remain visible only when they match the bounded safe
+model-name form. URL-, local-path-, query-, or credential-shaped labels are
+replaced with `[redacted]` in client errors and ordinary diagnostics.
 
 ## Opt-in plaintext trace
 
@@ -87,7 +92,9 @@ boundary than the trace payload boundary. Provider keys are read from the
 environment, written only to a mode-0600 configuration in a private temporary
 directory, removed from the CLIProxyAPI and Codex process environments, and
 deleted on exit. A genuine optional Codex run receives only the temporary local
-CLIProxyAPI client key. `KEEP_LIVE_TMP=1` removes the credential-bearing config
+CLIProxyAPI client key and runs in a dedicated process group that is terminated
+before cleanup, including any background marketplace child processes.
+`KEEP_LIVE_TMP=1` removes the credential-bearing config
 and scrubs known keys from retained text artifacts, then scans every retained
 file for the exact provider keys. A redaction/read/scan failure deletes the
 whole temporary directory and fails the run; it is never reported as sanitized.

@@ -54,9 +54,3 @@ func TestValidateImageReferenceConfiguredLimit(t *testing.T) {
 		t.Fatalf("exact limit rejected: %v", err)
 	}
 }
-
-func TestRedact(t *testing.T) {
-	if got := Redact("Bearer secret at https://example.com", "secret"); got == "Bearer secret at https://example.com" || got == "" {
-		t.Fatalf("redaction failed: %q", got)
-	}
-}

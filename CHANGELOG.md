@@ -3,7 +3,7 @@
 All notable release changes are documented here. Versions follow Semantic
 Versioning, and release tags use the `vX.Y.Z` form.
 
-## [0.3.0] - 2026-08-07
+## [0.3.0] - 2026-08-09
 
 ### Added
 
@@ -30,6 +30,12 @@ Versioning, and release tags use the `vX.Y.Z` form.
 
 - Rich reanalysis trusts only actual image blocks in the corresponding tool
   output; tool arguments never supply image bytes or references.
+- Active reanalysis is restricted to the terminal protocol-native tool-output
+  suffix. `view_image` rejects malformed arguments, unsupported fields, and
+  invalid detail values instead of silently downgrading them.
+- The generation-local refresh idempotency cache enforces its capacity even
+  while all entries are pending. Public errors and ordinary diagnostics redact
+  URL-, path-, or credential-shaped configured model labels.
 - Normal image paths remain redacted. When reanalysis is enabled, strictly
   validated paths under `.codex/attachments/<id>/` are retained only when the
   request explicitly declares `view_image`.
@@ -44,6 +50,13 @@ Versioning, and release tags use the `vX.Y.Z` form.
   attempts within the same job.
 - The Management form exposes `target_models` as a JSON array alongside the
   primary and fallback vision-model fields.
+
+### Release boundary
+
+- Validated plugin SDK baseline: CLIProxyAPI v7.2.119.
+- Host process and dynamic-loader E2E: CLIProxyAPI v7.2.119 and v7.2.121.
+- Published artifact targets: Linux, macOS, and Windows on amd64/arm64.
+- Release-tested DeepSeek target: `deepseek-v4-flash`.
 
 ## [0.2.0] - 2026-08-05
 
