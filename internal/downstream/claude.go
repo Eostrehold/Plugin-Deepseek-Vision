@@ -21,12 +21,6 @@ func (claudeAdapter) Discover(body []byte, options ...Options) (Plan, error) {
 	return discoverClaude(body, options...)
 }
 
-// DiscoverClaude is the package-level entry point used by tests and by the
-// route registry.  The variadic options form mirrors Discover for Responses.
-func DiscoverClaude(body []byte, options ...Options) (*claudePlan, error) {
-	return discoverClaude(body, options...)
-}
-
 type claudePlan struct {
 	original                  []byte
 	root                      any
