@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -319,6 +320,15 @@ func TestFullContextTraceExplainsPromptGroups(t *testing.T) {
 	analyzer.mu.Lock()
 	batches := append([][]vision.ImageInput(nil), analyzer.batches...)
 	analyzer.mu.Unlock()
+	sort.Slice(batches, func(i, j int) bool {
+		if len(batches[i]) == 0 {
+			return false
+		}
+		if len(batches[j]) == 0 {
+			return true
+		}
+		return batches[i][0].Number < batches[j][0].Number
+	})
 	if len(batches) != 2 || len(batches[0]) != 2 || len(batches[1]) != 3 {
 		t.Fatalf("VLM batches = %#v", batches)
 	}
