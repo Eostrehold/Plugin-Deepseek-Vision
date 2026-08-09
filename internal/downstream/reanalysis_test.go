@@ -62,15 +62,20 @@ func TestResponsesViewImageTailToolOutputBecomesActiveReanalysis(t *testing.T) {
 
 func TestResponsesReanalysisRequiresDeclaredAssociatedTailCall(t *testing.T) {
 	tests := []struct {
-		name  string
-		tools string
-		call  string
-		extra string
+		name   string
+		tools  string
+		call   string
+		middle string
+		extra  string
 	}{
 		{name: "undeclared", tools: `[]`, call: "call_1"},
 		{name: "unknown tool", tools: `[{"type":"function","name":"screenshot"}]`, call: "call_1"},
 		{name: "unmatched id", tools: `[{"type":"function","name":"view_image"}]`, call: "different"},
 		{name: "historical", tools: `[{"type":"function","name":"view_image"}]`, call: "call_1", extra: `,{"role":"user","content":[{"type":"input_text","text":"future request"}]}`},
+		{name: "later assistant", tools: `[{"type":"function","name":"view_image"}]`, call: "call_1", extra: `,{"role":"assistant","content":[{"type":"output_text","text":"already answered"}]}`},
+		{name: "later unrelated item", tools: `[{"type":"function","name":"view_image"}]`, call: "call_1", extra: `,{"type":"reasoning","summary":[]}`},
+		{name: "call outside tail round", tools: `[{"type":"function","name":"view_image"}]`, call: "call_1", middle: `,{"type":"reasoning","summary":[]}`},
+		{name: "wrong declaration shape", tools: `[{"type":"function","function":{"name":"view_image"}}]`, call: "call_1"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -80,7 +85,7 @@ func TestResponsesReanalysisRequiresDeclaredAssociatedTailCall(t *testing.T) {
 			}
 			body := []byte(`{"tools":` + tt.tools + `,"input":[` +
 				`{"role":"user","content":[{"type":"input_text","text":"focus"}]},` +
-				`{"type":"function_call","name":"` + callName + `","call_id":"call_1","arguments":"{}"},` +
+				`{"type":"function_call","name":"` + callName + `","call_id":"call_1","arguments":"{}"}` + tt.middle + `,` +
 				`{"type":"function_call_output","call_id":"` + tt.call + `","output":[{"type":"input_image","image_url":"` + tinyImage + `"}]}` + tt.extra + `]}`)
 			plan, err := Discover(body, Options{AgentReanalysisEnabled: true})
 			if err != nil {
@@ -139,6 +144,30 @@ func TestDedicatedReanalysisArgumentsAndLimit(t *testing.T) {
 	}
 }
 
+func TestViewImageArgumentsAreStrictForActiveOutput(t *testing.T) {
+	invalid := []string{
+		`not-json`,
+		`null`,
+		`{"detail":"low"}`,
+		`{"detail":1}`,
+		`{"path":1}`,
+		`{"path":""}`,
+		`{"focus":"unsupported"}`,
+	}
+	for _, args := range invalid {
+		body := []byte(`{"tools":[{"type":"function","name":"view_image"}],"input":[` +
+			`{"role":"user","content":[{"type":"input_text","text":"focus"}]},` +
+			`{"type":"function_call","name":"view_image","call_id":"call_1","arguments":` + quoted(args) + `},` +
+			`{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_image","image_url":"` + tinyImage + `"}]}` +
+			`]}`)
+		_, err := Discover(body, Options{AgentReanalysisEnabled: true})
+		var planner *Error
+		if !errors.As(err, &planner) || planner.StatusCode != 400 {
+			t.Fatalf("args=%q err=%v", args, err)
+		}
+	}
+}
+
 func TestChatAndClaudeTailReanalysisAssociation(t *testing.T) {
 	chat := []byte(`{"tools":[{"type":"function","function":{"name":"view_image"}}],"messages":[` +
 		`{"role":"user","content":[{"type":"text","text":"chat focus"}]},` +
@@ -166,6 +195,81 @@ func TestChatAndClaudeTailReanalysisAssociation(t *testing.T) {
 	claudeTool := claudePlan.Groups()[0].Tool
 	if claudeTool == nil || claudeTool.Focus != "claude explicit focus" || claudeTool.Location != "messages[2].content[0]" || !claudeTool.Tail {
 		t.Fatalf("claude tool=%#v", claudeTool)
+	}
+}
+
+func TestChatAndClaudeReanalysisMustRemainAtTail(t *testing.T) {
+	chat := []byte(`{"tools":[{"type":"function","function":{"name":"view_image"}}],"messages":[` +
+		`{"role":"user","content":"chat focus"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_chat","type":"function","function":{"name":"view_image","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_chat","content":[{"type":"image_url","image_url":{"url":"` + tinyImage + `"}}]},` +
+		`{"role":"assistant","content":"already answered"}` +
+		`]}`)
+	chatPlan, err := discoverChat(chat, Options{AgentReanalysisEnabled: true})
+	if err != nil || len(chatPlan.Groups()) != 1 || chatPlan.Groups()[0].Tool != nil {
+		t.Fatalf("historical Chat output activated: groups=%#v err=%v", chatPlan.Groups(), err)
+	}
+
+	claude := []byte(`{"tools":[{"name":"view_image"}],"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"claude focus"}]},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"view_image","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAECAw=="}}]}]},` +
+		`{"role":"assistant","content":[{"type":"text","text":"already answered"}]}` +
+		`]}`)
+	claudePlan, err := discoverClaude(claude, Options{AgentReanalysisEnabled: true})
+	if err != nil || len(claudePlan.Groups()) != 1 || claudePlan.Groups()[0].Tool != nil {
+		t.Fatalf("historical Claude output activated: groups=%#v err=%v", claudePlan.Groups(), err)
+	}
+
+	chatCrossRound := []byte(`{"tools":[{"type":"function","function":{"name":"view_image"}}],"messages":[` +
+		`{"role":"user","content":"chat focus"},` +
+		`{"role":"assistant","tool_calls":[{"id":"call_chat","type":"function","function":{"name":"view_image","arguments":"{}"}}]},` +
+		`{"role":"assistant","content":"intervening round"},` +
+		`{"role":"tool","tool_call_id":"call_chat","content":[{"type":"image_url","image_url":{"url":"` + tinyImage + `"}}]}` +
+		`]}`)
+	chatPlan, err = discoverChat(chatCrossRound, Options{AgentReanalysisEnabled: true})
+	if err != nil || len(chatPlan.Groups()) != 1 || chatPlan.Groups()[0].Tool != nil {
+		t.Fatalf("cross-round Chat output activated: groups=%#v err=%v", chatPlan.Groups(), err)
+	}
+
+	claudeCrossRound := []byte(`{"tools":[{"name":"view_image"}],"messages":[` +
+		`{"role":"user","content":[{"type":"text","text":"claude focus"}]},` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"view_image","input":{}}]},` +
+		`{"role":"assistant","content":[{"type":"text","text":"intervening round"}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAECAw=="}}]}]}` +
+		`]}`)
+	claudePlan, err = discoverClaude(claudeCrossRound, Options{AgentReanalysisEnabled: true})
+	if err != nil || len(claudePlan.Groups()) != 1 || claudePlan.Groups()[0].Tool != nil {
+		t.Fatalf("cross-round Claude output activated: groups=%#v err=%v", claudePlan.Groups(), err)
+	}
+}
+
+func TestToolDeclarationsUseProtocolNativeShape(t *testing.T) {
+	responses := []byte(`{"tools":[{"type":"function","function":{"name":"view_image"}}],"input":[` +
+		`{"type":"function_call","name":"view_image","call_id":"call_1","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_1","output":[{"type":"input_image","image_url":"` + tinyImage + `"}]}` +
+		`]}`)
+	responsesPlan, err := Discover(responses, Options{AgentReanalysisEnabled: true})
+	if err != nil || responsesPlan.Groups()[0].Tool != nil {
+		t.Fatalf("Responses accepted Chat declaration: groups=%#v err=%v", responsesPlan.Groups(), err)
+	}
+
+	chat := []byte(`{"tools":[{"type":"function","name":"view_image"}],"messages":[` +
+		`{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"view_image","arguments":"{}"}}]},` +
+		`{"role":"tool","tool_call_id":"call_1","content":[{"type":"image_url","image_url":{"url":"` + tinyImage + `"}}]}` +
+		`]}`)
+	chatPlan, err := discoverChat(chat, Options{AgentReanalysisEnabled: true})
+	if err != nil || chatPlan.Groups()[0].Tool != nil {
+		t.Fatalf("Chat accepted Responses declaration: groups=%#v err=%v", chatPlan.Groups(), err)
+	}
+
+	claude := []byte(`{"tools":[{"type":"function","function":{"name":"view_image"}}],"messages":[` +
+		`{"role":"assistant","content":[{"type":"tool_use","id":"tool_1","name":"view_image","input":{}}]},` +
+		`{"role":"user","content":[{"type":"tool_result","tool_use_id":"tool_1","content":[{"type":"image","source":{"type":"base64","media_type":"image/png","data":"AAECAw=="}}]}]}` +
+		`]}`)
+	claudePlan, err := discoverClaude(claude, Options{AgentReanalysisEnabled: true})
+	if err != nil || claudePlan.Groups()[0].Tool != nil {
+		t.Fatalf("Claude accepted Chat declaration: groups=%#v err=%v", claudePlan.Groups(), err)
 	}
 }
 

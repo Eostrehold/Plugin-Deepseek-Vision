@@ -151,9 +151,13 @@ The most recent eligible tool output is a tail group. A request may contain at
 most three active tail call IDs. A new `refresh` call ID executes once; an
 identical replay for that ID is idempotent, and changing its identity
 fingerprints or focus/language/model chain is rejected. `no_store` does not
-persist across requests. `view_image` uses the
-same controlled path and defaults to `detail: high`; malformed or undeclared
-tool calls are client errors rather than image fallbacks.
+persist across requests. `view_image` accepts only optional `path` and `detail`
+arguments, requires a non-empty string when `path` is present, and defaults to
+`detail: high`. For a declared, associated active output, malformed arguments,
+unsupported fields, and invalid detail values are client errors rather than
+image fallbacks. Undeclared, unknown, unassociated, or historical tool outputs
+remain ordinary image inputs. The plugin never reads the argument path and
+still trusts only image blocks in the tool output.
 
 `max_images_per_request` from older builds remains decodable but is ignored. It
 cannot silently restore the former four-block rejection behavior.

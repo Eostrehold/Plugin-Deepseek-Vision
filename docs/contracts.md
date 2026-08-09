@@ -92,6 +92,8 @@ Responses 请求，按 `vision_model`、`vision_fallback_models` 的顺序尝试
 规范化语言和完整有序模型链组成（detail 影响返回的图片指纹，cache 不是额外身份字段）。`no_store`
 不读取或写入跨请求缓存。`analysis_cache_size: 0` 只关闭普通分析 LRU；独立的、有界且代际内的
 call-ID 幂等缓存仍可处理 `refresh` 重放。
+pending reservation 也必须计入该缓存上限；若全部容量均被在途 call ID 占用，新 call ID 必须安全失败，
+不得让幂等 map 突破上限。
 
 请求核心形状：
 

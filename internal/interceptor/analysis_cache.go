@@ -58,6 +58,7 @@ type idempotencyCache struct {
 var (
 	errReanalysisCallConflict        = errors.New("reanalysis call ID was reused with different inputs")
 	errIdempotencyReservationAborted = errors.New("idempotency reservation aborted before analysis")
+	errIdempotencyCacheFull          = errors.New("reanalysis idempotency capacity is exhausted")
 )
 
 func newAnalysisCache(capacity int) *analysisCache {
@@ -129,6 +130,15 @@ func newIdempotencyCache(capacity int) *idempotencyCache {
 	return &idempotencyCache{capacity: capacity, items: make(map[string]*list.Element), lru: list.New()}
 }
 
+func (c *idempotencyCache) Size() int {
+	if c == nil {
+		return 0
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.items)
+}
+
 // Reserve atomically claims a call ID/identity pair. The owner receives a
 // reservation; identical concurrent callers wait for and reuse its outcome.
 // Reusing a live call ID with a different identity fails immediately.
@@ -175,6 +185,12 @@ func (c *idempotencyCache) Reserve(ctx context.Context, callID, identity string)
 			}
 		}
 		if !ok {
+			for len(c.items) >= c.capacity {
+				if !c.evictOldestCompletedLocked() {
+					c.mu.Unlock()
+					return nil, "", false, errIdempotencyCacheFull
+				}
+			}
 			entry := &idempotencyCacheEntry{key: key, identity: identity, pending: true, ready: make(chan struct{})}
 			element := c.lru.PushFront(entry)
 			c.items[key] = element
@@ -218,19 +234,23 @@ func (c *idempotencyCache) Complete(reservation *idempotencyReservation, value s
 
 func (c *idempotencyCache) evictCompletedLocked() {
 	for len(c.items) > c.capacity {
-		var candidate *list.Element
-		for element := c.lru.Back(); element != nil; element = element.Prev() {
-			if !element.Value.(*idempotencyCacheEntry).pending {
-				candidate = element
-				break
-			}
-		}
-		if candidate == nil {
+		if !c.evictOldestCompletedLocked() {
 			return
 		}
-		delete(c.items, candidate.Value.(*idempotencyCacheEntry).key)
-		c.lru.Remove(candidate)
 	}
+}
+
+func (c *idempotencyCache) evictOldestCompletedLocked() bool {
+	for element := c.lru.Back(); element != nil; element = element.Prev() {
+		entry := element.Value.(*idempotencyCacheEntry)
+		if entry.pending {
+			continue
+		}
+		delete(c.items, entry.key)
+		c.lru.Remove(element)
+		return true
+	}
+	return false
 }
 
 func analysisGroupCacheKey(images []vision.ImageInput, models []string, language, prompt string, dataTTL, urlTTL time.Duration) (string, time.Duration) {

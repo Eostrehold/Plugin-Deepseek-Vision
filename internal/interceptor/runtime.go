@@ -8,10 +8,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
 	"github.com/zesuy/Plugin-Deepseek-Vision/internal/config"
@@ -690,7 +693,8 @@ func (r *Runtime) terminateVisionFailure(ctx context.Context, state *runtimeStat
 		failure = normalizeVisionFailure(ErrRuntimeUnavailable, "")
 	}
 	errorID := newVisionErrorID()
-	details := map[string]any{"error_id": errorID, "attempts": failure.Attempts}
+	publicAttempts := safePublicAttemptFailures(failure.Attempts)
+	details := map[string]any{"error_id": errorID, "attempts": publicAttempts}
 	openAIError := map[string]any{
 		"type": "vision_preprocess_error", "code": "vision_fallback_exhausted",
 		"message": "vision preprocessing failed", "details": details,
@@ -706,7 +710,7 @@ func (r *Runtime) terminateVisionFailure(ctx context.Context, state *runtimeStat
 		}
 	}
 	body, _ := json.Marshal(payload)
-	fields := map[string]any{"error_id": errorID, "attempts": failure.Attempts}
+	fields := map[string]any{"error_id": errorID, "attempts": publicAttempts}
 	if state != nil {
 		fields["config_generation"] = state.generation
 	}
@@ -719,6 +723,133 @@ func (r *Runtime) terminateVisionFailure(ctx context.Context, state *runtimeStat
 		Terminate: true, StatusCode: http.StatusBadGateway,
 		ResponseHeaders: http.Header{"Content-Type": []string{"application/json"}}, ResponseBody: body,
 	}
+}
+
+func safePublicAttemptFailures(attempts []vision.AttemptFailure) []vision.AttemptFailure {
+	public := make([]vision.AttemptFailure, len(attempts))
+	copy(public, attempts)
+	for i := range public {
+		public[i].Model = safePublicModelLabel(public[i].Model)
+	}
+	return public
+}
+
+func safePublicModelLabel(model string) string {
+	const redacted = "[redacted]"
+	model = strings.TrimSpace(model)
+	if model == "" || len([]rune(model)) > 128 {
+		return redacted
+	}
+	lower := strings.ToLower(model)
+	if hasUnsafePublicModelPath(lower) {
+		return redacted
+	}
+	for _, segment := range strings.FieldsFunc(lower, func(r rune) bool { return r == '/' || r == ':' }) {
+		if sensitiveModelSegment(segment) {
+			return redacted
+		}
+	}
+	if strings.Contains(lower, "://") || strings.Contains(lower, `\`) || strings.Contains(lower, "..") ||
+		strings.ContainsAny(lower, "?#%=@") || strings.HasPrefix(lower, "/") || strings.HasPrefix(lower, ".") ||
+		strings.Contains(lower, ".codex/attachments") || (len(lower) >= 3 && lower[1] == ':' && lower[2] == '/') {
+		return redacted
+	}
+	for _, r := range model {
+		if unicode.IsLetter(r) || unicode.IsDigit(r) || strings.ContainsRune("-._/:", r) {
+			continue
+		}
+		return redacted
+	}
+	return model
+}
+
+func hasUnsafePublicModelPath(model string) bool {
+	segments := strings.Split(model, "/")
+	for index, segment := range segments {
+		if segment == "" || strings.HasPrefix(segment, ".") {
+			return true
+		}
+		colon := strings.IndexByte(segment, ':')
+		if colon < 0 {
+			continue
+		}
+		if colon == 0 || colon == len(segment)-1 {
+			return true
+		}
+		prefix := segment[:colon]
+		if index < len(segments)-1 || strings.Count(segment, ":") > 1 || knownPublicURIScheme(prefix) || isWindowsDrivePrefix(prefix) || isPublicEndpointSegment(segment) {
+			return true
+		}
+	}
+	return false
+}
+
+func knownPublicURIScheme(value string) bool {
+	switch value {
+	case "http", "https", "file", "ftp", "ftps", "data", "javascript", "ws", "wss", "ssh", "s3", "gs", "azure", "mailto", "unix":
+		return true
+	default:
+		return false
+	}
+}
+
+func isWindowsDrivePrefix(value string) bool {
+	return len(value) == 1 && value[0] >= 'a' && value[0] <= 'z'
+}
+
+func isPublicEndpointSegment(segment string) bool {
+	colon := strings.LastIndexByte(segment, ':')
+	if colon <= 0 || colon == len(segment)-1 {
+		return false
+	}
+	port, err := strconv.Atoi(segment[colon+1:])
+	if err != nil || port < 1 || port > 65535 {
+		return false
+	}
+	host := segment[:colon]
+	return host == "localhost" || net.ParseIP(host) != nil || looksLikePublicDomainHost(host)
+}
+
+func looksLikePublicDomainHost(host string) bool {
+	labels := strings.Split(host, ".")
+	if len(labels) < 2 {
+		return false
+	}
+	tld := labels[len(labels)-1]
+	if len(tld) < 2 || len(tld) > 63 {
+		return false
+	}
+	for _, r := range tld {
+		if r < 'a' || r > 'z' {
+			return false
+		}
+	}
+	for _, label := range labels[:len(labels)-1] {
+		if label == "" || strings.HasPrefix(label, "-") || strings.HasSuffix(label, "-") {
+			return false
+		}
+		for _, r := range label {
+			if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func sensitiveModelSegment(segment string) bool {
+	for _, marker := range []string{"api_key", "apikey", "api-key", "access_token", "token", "secret", "password", "passwd", "credential", "authorization", "bearer"} {
+		if segment == marker || strings.HasPrefix(segment, marker+"-") || strings.HasPrefix(segment, marker+"_") {
+			return true
+		}
+	}
+	for _, prefix := range []string{"sk-", "sk_", "ghp_", "github_pat_", "xoxb-", "xoxp-", "ya29.", "aiza"} {
+		if strings.HasPrefix(segment, prefix) {
+			return true
+		}
+	}
+	return false
 }
 
 func newVisionErrorID() string {
