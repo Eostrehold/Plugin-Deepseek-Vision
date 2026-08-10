@@ -8,7 +8,7 @@
 把同一 prompt 中的多张图片转换为一份联合视觉分析，再交给 DeepSeek 继续推理。Agent 还可以针对同一张图
 提出新的观察重点，获得一次不受普通缓存影响的专项分析。
 
-[![Release](https://img.shields.io/badge/release-v0.3.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.1-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
@@ -30,7 +30,7 @@ DeepSeek 文本模型无法直接消费 OpenAI Responses 请求中的 `input_ima
 > 这不是新的代理、模型提供商或协议转换层。插件不配置额外 endpoint 或 API key；模型路由、凭据、协议转换、
 > 网络传输、重试与供应商限流都继续由 CLIProxyAPI 负责。
 
-## v0.3.0 有什么
+## v0.3.1 有什么
 
 | 能力 | 行为 |
 | --- | --- |
@@ -130,7 +130,7 @@ claude          + /v1/messages
 final Model ∈ target_models
 ```
 
-| 场景 | v0.3.0 |
+| 场景 | v0.3.1 |
 | --- | --- |
 | `input[].content[]` 中的 URL / data URI `input_image` | ✅ |
 | 数组型 `function_call_output.output[]` 中的 `input_image` | ✅ |
@@ -161,7 +161,7 @@ Release 仍由本仓库维护。
 ### 从 GitHub Releases 手动安装
 
 如果当前 CLIProxyAPI 版本尚未提供插件商店，可从
-[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载与运行平台匹配的 v0.3.0 ZIP；
+[GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases) 下载与运行平台匹配的 v0.3.1 ZIP；
 解压后只有一个动态库。checksum 校验、其他平台示例和升级步骤见[安装文档](docs/installation.md)。
 
 ### Docker 部署
@@ -259,11 +259,11 @@ data URI、凭据或本地路径。宿主 executor 错误保持通用 `host_exec
 `objdump`（Windows）。脚本默认构建当前宿主的 GOOS/GOARCH：
 
 ```bash
-VERSION=0.3.0 ./scripts/package.sh
+VERSION=0.3.1 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-产物是可复现的 `dist/deepseek-vision_0.3.0_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
+产物是可复现的 `dist/deepseek-vision_0.3.1_<goos>_<goarch>.zip` 和 `dist/checksums.txt`。
 普通提交和 PR 除常规检查外，只构建 Linux amd64 兼容包：
 
 ```bash
@@ -274,14 +274,14 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-在 GitHub Actions 中手动运行 Release workflow 并输入 `0.3.0` 后，它才会在 6 个原生 runner 上全量
+在 GitHub Actions 中手动运行 Release workflow 并输入 `0.3.1` 后，它才会在 6 个原生 runner 上全量
 构建，聚合 6 个 ZIP 与一份 checksum，并把资产写入 Draft Release；检查无误后再由维护者手动发布。
 CI 和发布包
 不需要也不会包含真实上游 key。宿主 mock E2E 见 [测试文档](docs/testing.md)。
 
 ## 当前限制
 
-- v0.3.0 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
+- v0.3.1 发布 Linux、macOS、Windows 的 amd64/arm64 资产。CLIProxyAPI 也支持 FreeBSD amd64 动态插件，
   但本版本尚未发布未经 FreeBSD 实机验收的资产。
 - 插件只改写精确命中的 Responses、Chat Completions 和 Anthropic Messages 路由。
 - 预处理必须在响应流开始前完成，因此 VLM 延迟会增加首字节时间。
@@ -291,7 +291,7 @@ CI 和发布包
 - Agent 重分析默认关闭；启用后也只保留请求声明 `view_image` 且严格符合
   `.codex/attachments/<id>/` 的路径，工具输出中没有真实图片块时不会伪造图片。
 - URL 图片会由视觉模型所在上游读取；仍需根据部署设置 DNS、网络出口和 allowlist。
-- `deepseek-v4-pro` 不是 v0.3.0 的发布验收目标。
+- `deepseek-v4-pro` 不是 v0.3.1 的发布验收目标。
 
 完整边界见 [限制说明](docs/limitations.md) 与 [安全说明](docs/security.md)。
 

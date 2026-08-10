@@ -1,10 +1,10 @@
 # 插件契约
 
-本文件冻结 `deepseek-vision` v0.3.0 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
+本文件冻结 `deepseek-vision` v0.3.1 的宿主插件契约和 VLM 处理语义。后续实现若需要改变字段、门控或失败行为，必须先提升契约版本并更新 fixtures。
 
 本版本的真实网关和发布验收只使用 `deepseek-v4-flash`。契约和配置保留
 `deepseek-v4-pro` 作为未来支持目标，但其 Responses 服务当前不可用，因此
-不要求、不探测，也不把 pro 真实调用作为 v0.3.0 的完成条件。
+不要求、不探测，也不把 pro 真实调用作为 v0.3.1 的完成条件。
 
 ## 1. ABI 与 RPC
 
@@ -130,6 +130,22 @@ VLM 响应必须可抽取为非空文本，并受 `max_response_bytes` 和 `max_
 `vision_fallback_models`：上游 HTTP 408、429 或 5xx；单次尝试超时；响应无效、为空或超出响应/结果上限；
 以及无法分类的宿主 executor 错误。父请求 deadline/cancel、重写失败和其他不可重试结果不会继续回退。
 每次尝试都使用父 context 的剩余时间；回退模型最多 3 个，且不得与主模型重复。
+
+### 用户文本形态矩阵
+
+三个下游协议都允许用户文本以单个字符串或有序内容数组出现。两种形态都属于视觉上下文：
+当图片位于后续消息、tool output 或其他同一请求项中时，最近的普通用户文本仍会作为 focus；
+同一项内的文本按线上的顺序优先合并。该归一化只影响 focus 和重分析回溯，不改变原始字符串字段、
+内容块顺序或图片来源支持范围。
+
+| 协议 | 普通用户文本 | 图片/工具内容 | `null`、未知类型与不支持来源 |
+| --- | --- | --- | --- |
+| Responses | `content: "…"` 与 `content: [{"type":"input_text",…}]` 均参与上下文；两者均构成用户轮次边界 | `input_image`；`function_call_output.output[]` 中的 `input_image`；显式 `view_image` 可触发受控重分析 | `content: null` 保持空项语义；未知内容块按既有透传/校验规则处理；仅有 `file_id` 的图片仍返回 422 |
+| Chat Completions | `messages[].content: "…"` 与 `content: [{"type":"text",…}]` 均参与上下文 | `content[]` 中的 `image_url`，包括 tool role 消息 | 字符串原样保留；`null`、未知块和不支持的图片 URL 继续遵循既有错误/透传契约 |
+| Anthropic Messages | `messages[].content: "…"` 与含 `text` block 的数组均参与上下文；纯 `tool_result` 不建立普通用户轮次 | 直接 `image` block；`tool_result.content[]` 中的 `image` | `null`、未知块和 file/未知 source 继续遵循既有透传或 422 契约 |
+
+内容数组中的文本只作为上下文索引输入；改写时仍保留非图片块及其原顺序。主动重分析回溯
+最近普通用户轮次时，空的最新轮次不会回退到更早轮次，以避免把陈旧指令用于新工具调用。
 
 ## 5. Responses 图片改写
 

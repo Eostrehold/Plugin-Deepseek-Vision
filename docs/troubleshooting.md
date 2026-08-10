@@ -89,7 +89,7 @@ uses `previous_response_id`, remember that server-side history remains hidden
 from this callback; only images present in the current visible `input[]` can be
 rewritten.
 
-For v0.3.0, use `deepseek-v4-flash` when checking a real upstream. The
+For v0.3.1, use `deepseek-v4-flash` when checking a real upstream. The
 `deepseek-v4-pro` entry is future-supported configuration only; it is not a
 required or probed service in this release.
 
@@ -193,6 +193,11 @@ that provider transport and plugin rewriting succeeded, but the text model did
 not choose `view_image` or returned a tool shape Codex could not execute. Do not
 promote that nondeterministic Codex behavior to a release gate; use the
 deterministic two-request phase to diagnose the plugin contract.
+
+If a direct vision-provider probe succeeds only with `x-api-key` while the
+same key is rejected as a Bearer token, run the live test with
+`GPT_API_KEY_HEADER=x-api-key`. Leave the default unchanged for providers that
+use standard OpenAI Bearer authentication.
 
 When a thinking-mode text provider says `reasoning_content` was not returned,
 verify that the client echoed the opaque Responses reasoning item before the

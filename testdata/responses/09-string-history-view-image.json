@@ -1,0 +1,34 @@
+{
+  "model": "deepseek-v4-flash",
+  "tools": [
+    {
+      "type": "function",
+      "name": "view_image",
+      "description": "Open an Agent-owned attachment preview"
+    }
+  ],
+  "input": [
+    {
+      "role": "user",
+      "content": "Check button alignment, overflow, and abnormal whitespace."
+    },
+    {
+      "type": "function_call",
+      "name": "view_image",
+      "call_id": "call_string_history",
+      "arguments": "{\"path\":\"/home/example/.codex/attachments/att_string_history/preview.png\",\"detail\":\"high\"}"
+    },
+    {
+      "type": "function_call_output",
+      "call_id": "call_string_history",
+      "output": [
+        {
+          "type": "input_image",
+          "image_url": "data:image/png;base64,AAECAw==",
+          "detail": "high"
+        }
+      ]
+    }
+  ],
+  "stream": false
+}

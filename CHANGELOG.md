@@ -3,6 +3,23 @@
 All notable release changes are documented here. Versions follow Semantic
 Versioning, and release tags use the `vX.Y.Z` form.
 
+## [0.3.1] - 2026-08-10
+
+### Fixed
+
+- Accept valid string-form OpenAI Responses `input[].content` values instead of
+  rejecting the complete request as malformed. String and array user text now
+  produce the same visual focus for later image-bearing items and controlled
+  `view_image` reanalysis.
+- Preserve rich `function_call_output.output[]` image discovery when the same
+  item also carries string content.
+
+### Changed
+
+- Centralized ordered user-context selection for Responses, Chat Completions,
+  and Anthropic Messages while retaining each protocol's existing local-text,
+  tool-result, rewrite, error, ABI, and configuration contracts.
+
 ## [0.3.0] - 2026-08-09
 
 ### Added
@@ -118,6 +135,7 @@ Initial public release.
 - Chat Completions, Anthropic Messages, `file_id`-only images, and hidden
   `previous_response_id` history are outside the supported conversion boundary.
 
+[0.3.1]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.3.1
 [0.3.0]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.3.0
 [0.2.0]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.2.0
 [0.1.1]: https://github.com/Zesuy/Plugin-Deepseek-Vision/releases/tag/v0.1.1

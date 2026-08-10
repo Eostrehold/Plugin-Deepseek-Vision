@@ -13,6 +13,7 @@ TIMEOUT=${LIVE_TIMEOUT_SECONDS:-300}
 DEEPSEEK_BASE_URL=${DEEPSEEK_BASE_URL:-https://api.deepseek.com/v1}
 DEEPSEEK_MODEL=${DEEPSEEK_MODEL:-deepseek-v4-flash}
 GPT_BASE_URL=${GPT_BASE_URL:-}
+GPT_API_KEY_HEADER=${GPT_API_KEY_HEADER:-authorization}
 VISION_MODEL=${VISION_MODEL:-glm-4.6v-flash}
 VISION_FALLBACK_MODELS=${VISION_FALLBACK_MODELS:-}
 LIVE_USE_CODEX=${LIVE_USE_CODEX:-0}
@@ -31,6 +32,10 @@ done
 require_value DEEPSEEK_API_KEY
 require_value GPT_API_KEY
 require_value GPT_BASE_URL
+if [[ "$GPT_API_KEY_HEADER" != "authorization" && "$GPT_API_KEY_HEADER" != "x-api-key" ]]; then
+  echo "GPT_API_KEY_HEADER must be authorization or x-api-key" >&2
+  exit 2
+fi
 if [[ -z "$CLI_ROOT" || ! -d "$CLI_ROOT" ]]; then
   echo "set CLIPROXY_ROOT to a CLIProxyAPI checkout compatible with v7.2.121" >&2
   exit 2
@@ -97,7 +102,7 @@ PY
 
 DEEPSEEK_BASE_URL=$(normalize_openai_base "$DEEPSEEK_BASE_URL")
 GPT_BASE_URL=$(normalize_openai_base "$GPT_BASE_URL")
-export DEEPSEEK_BASE_URL DEEPSEEK_MODEL GPT_BASE_URL VISION_MODEL VISION_FALLBACK_MODELS
+export DEEPSEEK_BASE_URL DEEPSEEK_MODEL GPT_BASE_URL GPT_API_KEY_HEADER VISION_MODEL VISION_FALLBACK_MODELS
 export LIVE_EXPECT_FALLBACK LIVE_FORCE_PRIMARY_STATUS
 
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/deepseek-vision-live-e2e.XXXXXX")
@@ -285,8 +290,8 @@ fi
 
 echo "building plugin and temporary CLIProxyAPI host"
 CGO_ENABLED=1 GOTOOLCHAIN=auto go build -buildmode=c-shared -trimpath \
-  -ldflags='-s -w -X main.pluginVersion=0.3.0-live-e2e' \
-  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.3.0.so" "$ROOT"
+  -ldflags='-s -w -X main.pluginVersion=0.3.1-live-e2e' \
+  -o "$PLUGIN_DIR/linux/amd64/deepseek-vision-v0.3.1.so" "$ROOT"
 (cd "$CLI_ROOT" && CGO_ENABLED=1 GOTOOLCHAIN=auto go build -trimpath -o "$TMP/cliproxy" ./cmd/server)
 
 python3 - "$CONFIG" "$PLUGIN_DIR" "$HOST_PORT" <<'PY'
@@ -328,7 +333,7 @@ config = {
             "deepseek-vision": {
                 "enabled": True,
                 "priority": 100,
-                "store": {"source": "live-provider-e2e", "version": "0.3.0"},
+                "store": {"source": "live-provider-e2e", "version": "0.3.1"},
                 "target_models": [deepseek_model],
                 "vision_model": configured_primary,
                 "vision_fallback_models": fallbacks,
@@ -359,6 +364,11 @@ config = {
         {
             "name": "live-vision-provider",
             "base-url": os.environ["GPT_BASE_URL"],
+            "headers": (
+                {"x-api-key": os.environ["GPT_API_KEY"]}
+                if os.environ.get("GPT_API_KEY_HEADER") == "x-api-key"
+                else {}
+            ),
             "api-key-entries": [{"api-key": os.environ["GPT_API_KEY"]}],
             "models": [
                 {"name": model, "alias": model, "input-modalities": ["text", "image"]}
@@ -473,7 +483,9 @@ reanalysis = {
     "model": model,
     "tools": tools,
     "input": [
-        {"role": "user", "content": [{"type": "input_text", "text": focus}]},
+        # Keep this as a string to exercise the Responses history shape that
+        # regressed in Issue #8 through the real host and both providers.
+        {"role": "user", "content": focus},
         {"type": "function_call", "name": "view_image", "call_id": "live_view_001", "arguments": json.dumps({"path": str(image_path), "detail": "original"})},
         {"type": "function_call", "name": "deepseek_vision_reanalyze", "call_id": "live_reanalyze_001", "arguments": json.dumps({
             "attachment_ids": ["att_live"],

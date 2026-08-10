@@ -8,7 +8,7 @@
 through the host, turns all images in one prompt into a joint visual analysis, and lets DeepSeek continue with text.
 An Agent can also revisit the same image with a new focus and obtain a fresh task-specific analysis.
 
-[![Release](https://img.shields.io/badge/release-v0.3.0-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
+[![Release](https://img.shields.io/badge/release-v0.3.1-2ea44f)](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases)
 [![CI](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml/badge.svg)](https://github.com/Zesuy/Plugin-Deepseek-Vision/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.26-00ADD8?logo=go&logoColor=white)](https://go.dev/)
 [![CLIProxyAPI](https://img.shields.io/badge/CLIProxyAPI-v7.2.119-5B5BD6)](https://github.com/router-for-me/CLIProxyAPI)
@@ -32,7 +32,7 @@ visual information, but never receives image blocks it cannot read.
 > setting. CLIProxyAPI continues to own model routing, credentials, protocol translation, transport, retries, and
 > provider rate-limit policy.
 
-## What v0.3.0 provides
+## What v0.3.1 provides
 
 | Capability | Behavior |
 | --- | --- |
@@ -137,7 +137,7 @@ claude          + /v1/messages
 final Model in target_models
 ```
 
-| Scenario | v0.3.0 |
+| Scenario | v0.3.1 |
 | --- | --- |
 | URL/data-URI `input_image` in `input[].content[]` | ✅ |
 | `input_image` in array-form `function_call_output.output[]` | ✅ |
@@ -167,7 +167,7 @@ The official source provides indexing and distribution, while this repository co
 
 ### Install manually from GitHub Releases
 
-If the installed CLIProxyAPI version does not expose Plugin Store yet, download the v0.3.0 ZIP for the platform where
+If the installed CLIProxyAPI version does not expose Plugin Store yet, download the v0.3.1 ZIP for the platform where
 CLIProxyAPI runs from [GitHub Releases](https://github.com/Zesuy/Plugin-Deepseek-Vision/releases). It contains one
 dynamic library. See the [installation guide](docs/installation.md) for checksums, other platforms, and upgrades.
 
@@ -271,11 +271,11 @@ Native builds require Go 1.26, CGO, a platform C compiler, Python, Git, and eith
 `objdump` (Windows). The script targets the current host GOOS/GOARCH by default:
 
 ```bash
-VERSION=0.3.0 ./scripts/package.sh
+VERSION=0.3.1 ./scripts/package.sh
 ./scripts/checksum.sh
 ```
 
-This produces reproducible `dist/deepseek-vision_0.3.0_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
+This produces reproducible `dist/deepseek-vision_0.3.1_<goos>_<goarch>.zip` and `dist/checksums.txt`. In addition to
 the normal checks, regular pushes and PRs build only the Linux amd64 compatibility package:
 
 ```bash
@@ -286,14 +286,14 @@ go vet ./...
 ./scripts/package-smoke.sh
 ```
 
-Manually run the Release workflow in GitHub Actions with version `0.3.0` to perform the full six-runner build,
+Manually run the Release workflow in GitHub Actions with version `0.3.1` to perform the full six-runner build,
 aggregate six ZIPs and one checksum file, and attach them to a Draft Release. A maintainer publishes it only after
 inspection. CI and release
 assets need no real upstream key. See [testing](docs/testing.md) for the mock-host E2E path.
 
 ## Current limitations
 
-- v0.3.0 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
+- v0.3.1 publishes Linux, macOS, and Windows assets for amd64/arm64. CLIProxyAPI also supports FreeBSD amd64 dynamic
   plugins, but this release does not publish an asset that has not passed native FreeBSD acceptance.
 - Only the exact Responses, Chat Completions, and Anthropic Messages routes are rewritten.
 - VLM preprocessing completes before streaming, so it adds time to first byte.
@@ -304,7 +304,7 @@ assets need no real upstream key. See [testing](docs/testing.md) for the mock-ho
 - Agent reanalysis is disabled by default. When enabled, paths are retained only for declared `view_image` and only
   under strictly validated `.codex/attachments/<id>/` directories; missing image blocks are never fabricated.
 - Remote URLs are fetched by the selected vision provider; deployments still need DNS, egress, and allowlist policy.
-- `deepseek-v4-pro` is not a v0.3.0 release-acceptance target.
+- `deepseek-v4-pro` is not a v0.3.1 release-acceptance target.
 
 See [limitations](docs/limitations.md) and [security](docs/security.md) for the full boundary.
 

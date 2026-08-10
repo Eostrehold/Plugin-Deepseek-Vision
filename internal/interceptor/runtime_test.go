@@ -594,18 +594,29 @@ func TestHandleCacheSeparatesDifferentFocusPrompts(t *testing.T) {
 	r := newTestRuntime(t, analyzer)
 	defer r.Shutdown()
 	reference := "https://example.com/shared.png"
-	for _, focus := range []string{"first focus", "second focus"} {
-		body := `{"input":[{"role":"user","content":[{"type":"input_text","text":"` + focus + `"},{"type":"input_image","image_url":"` + reference + `"}]}]}`
+	wantFocus := []string{"first focus", "second focus"}
+	for _, focus := range wantFocus {
+		body := `{"input":[` +
+			`{"role":"user","content":"` + focus + `"},` +
+			`{"type":"function_call_output","output":[{"type":"input_image","image_url":"` + reference + `"}]}` +
+			`]}`
 		resp, err := r.Handle(makeRequest("deepseek-v4-flash", "openai-response", "/v1/responses", body))
 		if err != nil || resp.Terminate {
 			t.Fatalf("focus %q response=%#v err=%v", focus, resp, err)
 		}
+		if strings.Contains(string(resp.Body), "input_image") || !strings.Contains(string(resp.Body), `"content":"`+focus+`"`) {
+			t.Fatalf("focus %q rewrite=%s", focus, resp.Body)
+		}
 	}
 	analyzer.mu.Lock()
 	calls := len(analyzer.refs)
+	gotFocus := append([]string(nil), analyzer.focus...)
 	analyzer.mu.Unlock()
 	if calls != 2 {
 		t.Fatalf("different focus prompts shared cache; calls=%d", calls)
+	}
+	if len(gotFocus) != len(wantFocus) || gotFocus[0] != wantFocus[0] || gotFocus[1] != wantFocus[1] {
+		t.Fatalf("analyzer focus=%q, want %q", gotFocus, wantFocus)
 	}
 }
 

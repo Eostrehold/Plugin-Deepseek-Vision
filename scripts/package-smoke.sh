@@ -18,12 +18,12 @@ esac
 smoke_dir="$(mktemp -d "${TMPDIR:-/tmp}/deepseek-vision-smoke.XXXXXX")"
 trap 'rm -rf "$smoke_dir"' EXIT
 
-VERSION="${VERSION:-0.3.0}" DIST_DIR="$smoke_dir/dist" \
+VERSION="${VERSION:-0.3.1}" DIST_DIR="$smoke_dir/dist" \
   "$repo_dir/scripts/package.sh"
-VERSION="${VERSION:-0.3.0}" DIST_DIR="$smoke_dir/dist" \
+VERSION="${VERSION:-0.3.1}" DIST_DIR="$smoke_dir/dist" \
   "$repo_dir/scripts/checksum.sh"
 
-VERSION="${VERSION:-0.3.0}" DIST_DIR="$smoke_dir/dist" ARCHIVE_ROOT="$smoke_dir/unpacked" \
+VERSION="${VERSION:-0.3.1}" DIST_DIR="$smoke_dir/dist" ARCHIVE_ROOT="$smoke_dir/unpacked" \
 TARGET_GOOS="$target_goos" TARGET_GOARCH="$target_goarch" LIBRARY_NAME="deepseek-vision${extension}" \
   "$python_bin" - <<'PY'
 import hashlib

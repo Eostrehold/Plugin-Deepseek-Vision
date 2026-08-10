@@ -27,7 +27,7 @@ services:
 ```bash
 docker compose -f docker/docker-compose.example.yml config
 docker build --file docker/Dockerfile.plugin --target artifact \
-  --build-arg VERSION=0.3.0 \
+  --build-arg VERSION=0.3.1 \
   --output type=local,dest=/tmp/deepseek-vision-plugin .
 ```
 
@@ -47,7 +47,7 @@ image blocks from the business-upstream request. Fallback attempts have distinct
 `attempt-NN` artifact names so a later model cannot overwrite an earlier
 model's request or response.
 
-v0.3.0 acceptance also covers the ordered primary-plus-fallback chain: retryable
+v0.3.1 acceptance also covers the ordered primary-plus-fallback chain: retryable
 HTTP 408/429/5xx, attempt timeouts, invalid/empty/oversized results, and generic
 host executor errors advance in order, while parent cancellation and rewrite
 failures do not. Assertions must verify that terminal 502 bodies contain only
@@ -74,8 +74,11 @@ real provider key or local user path.
 text provider and a real OpenAI-compatible vision provider. Its deterministic
 phase builds a temporary CLIProxyAPI process, sends two Responses requests that
 reproduce a Codex `view_image` plus `deepseek_vision_reanalyze` rich-output
-round, and validates the resulting plaintext trace. It generates a small local
-PNG fixture and does not use a repository or user attachment. If the text
+round, and validates the resulting plaintext trace. The second request keeps
+its ordinary user focus in the string `content` shape so this live gate covers
+the Issue #8 regression, not only the equivalent `input_text` array shape. It
+generates a small local PNG fixture and does not use a repository or user
+attachment. If the text
 provider returns an opaque Responses reasoning item, the synthetic second round
 echoes it before the assistant function calls exactly as a real Codex tool loop
 does; this keeps thinking-mode provider history valid without inspecting or
@@ -92,10 +95,13 @@ GPT_BASE_URL=https://vision.example.test/v1 \
 Defaults are `DEEPSEEK_BASE_URL=https://api.deepseek.com/v1`,
 `DEEPSEEK_MODEL=deepseek-v4-flash`, and
 `VISION_MODEL=glm-4.6v-flash`. Override those names for the models exposed by
-the selected providers. A comma-separated `VISION_FALLBACK_MODELS` configures
-the real ordered chain. Set `LIVE_EXPECT_FALLBACK=1` only when the selected
-primary is expected to fail with a retryable condition and the trace must prove
-that a later attempt was selected.
+the selected providers. The vision provider uses standard Bearer authentication
+by default. Set `GPT_API_KEY_HEADER=x-api-key` for an OpenAI-compatible endpoint
+that authenticates with `x-api-key`; the disposable CLIProxyAPI configuration
+then adds that provider header. A comma-separated `VISION_FALLBACK_MODELS`
+configures the real ordered chain. Set `LIVE_EXPECT_FALLBACK=1` only when the
+selected primary is expected to fail with a retryable condition and the trace
+must prove that a later attempt was selected.
 
 For a deterministic hybrid fallback test, also set
 `LIVE_FORCE_PRIMARY_STATUS=503`. The script then routes only the synthetic

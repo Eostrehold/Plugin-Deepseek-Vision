@@ -51,12 +51,6 @@ type claudeImageLocation struct {
 	globalPos int
 }
 
-type claudeFocusCandidate struct {
-	message int
-	pos     int
-	text    string
-}
-
 type claudePendingImage struct {
 	Image
 	location claudeImageLocation
@@ -94,7 +88,7 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 	}
 	plan.inputItems = len(messages)
 
-	var userCandidates []claudeFocusCandidate
+	var userContext userContextIndex
 	var pending []claudePendingImage
 	globalPos := 0
 
@@ -113,8 +107,8 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 			// visible user text still participates in focus fallback for images in
 			// later turns.
 			globalPos++
-			if role == "user" && strings.TrimSpace(text) != "" {
-				userCandidates = append(userCandidates, claudeFocusCandidate{message: messageIndex, pos: globalPos, text: text})
+			if role == "user" {
+				userContext.recordTurn(messageIndex, positionedUserText{pos: globalPos, text: text})
 			}
 			continue
 		}
@@ -132,12 +126,17 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 				return nil, malformed("message.content blocks must be objects", fmt.Sprintf("messages[%d].content[%d]", messageIndex, blockIndex))
 			}
 			typeName, _ := block["type"].(string)
+			if role == "user" && typeName != "tool_result" {
+				// Pure tool_result messages are protocol continuations, not ordinary
+				// user turns. Any other block establishes a user-context boundary,
+				// even when it carries no text.
+				userContext.recordTurn(messageIndex)
+			}
 			if typeName == "text" {
 				if text, ok := block["text"].(string); ok && strings.TrimSpace(text) != "" {
 					directText = append(directText, text)
-					candidate := claudeFocusCandidate{message: messageIndex, pos: globalPos, text: text}
 					if role == "user" {
-						userCandidates = append(userCandidates, candidate)
+						userContext.recordTurn(messageIndex, positionedUserText{pos: globalPos, text: text})
 					}
 				}
 			}
@@ -194,7 +193,7 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 			if len(toolImages) == 0 {
 				continue
 			}
-			prompt := joinClaudePrompt(toolText, joinClaudeText(directText), nearestClaudeFocus(claudeImageLocation{message: messageIndex, globalPos: toolImages[0].location.globalPos}, userCandidates, opt.MaxFocusChars))
+			prompt := joinClaudePrompt(toolText, joinClaudeText(directText), userContext.nearest(messageIndex, toolImages[0].location.globalPos, opt.MaxFocusChars, false))
 			group := claudePromptGroup{
 				PromptGroup: PromptGroup{ID: len(plan.groups) + 1, InputIndex: messageIndex, Source: "tool_result", Prompt: prompt, locationKind: locationFunctionOutput},
 				container:   claudeContainerLocation{messageIndex: messageIndex, toolResultIndex: blockIndex},
@@ -209,7 +208,7 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 		// A message's direct images share one VLM call.  Keep the group prompt
 		// stable for every image in that message, including text after an image.
 		if len(directImages) > 0 {
-			prompt := joinClaudePrompt(directText, nearestClaudeFocus(claudeImageLocation{message: messageIndex, globalPos: directImages[0].location.globalPos}, userCandidates, opt.MaxFocusChars))
+			prompt := joinClaudePrompt(directText, userContext.nearest(messageIndex, directImages[0].location.globalPos, opt.MaxFocusChars, false))
 			group := claudePromptGroup{
 				PromptGroup: PromptGroup{ID: len(plan.groups) + 1, InputIndex: messageIndex, Source: "content", Prompt: prompt, locationKind: locationContent},
 				container:   claudeContainerLocation{messageIndex: messageIndex, toolResultIndex: -1},
@@ -271,7 +270,7 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 				}
 			}
 		}
-		group.Prompt = truncateRunes(joinClaudePrompt(primary, joinClaudeText(containing), nearestClaudeFocus(claudeImageLocation{message: group.InputIndex, globalPos: group.Images[0].location.globalPos}, userCandidates, opt.MaxFocusChars)), opt.MaxFocusChars)
+		group.Prompt = truncateRunes(joinClaudePrompt(primary, joinClaudeText(containing), userContext.nearest(group.InputIndex, group.Images[0].location.globalPos, opt.MaxFocusChars, false)), opt.MaxFocusChars)
 		for j := range group.Images {
 			group.Images[j].FocusHint = group.Prompt
 			for k := range pending {
@@ -316,7 +315,7 @@ func discoverClaude(body []byte, options ...Options) (*claudePlan, error) {
 	if len(uniqueReferences) > opt.MaxImages {
 		return nil, imageCountExceeded(len(uniqueReferences), opt.MaxImages, summarizeClaudeImages(plan.images, plan.inputItems), plan.images)
 	}
-	allowPaths, err := annotateClaudeReanalysis(object, plan.groups, opt)
+	allowPaths, err := annotateClaudeReanalysis(object, plan.groups, opt, &userContext)
 	if err != nil {
 		return nil, err
 	}
@@ -407,22 +406,6 @@ func joinClaudePrompt(primary []string, fallback ...string) string {
 		}
 	}
 	return ""
-}
-
-func nearestClaudeFocus(location claudeImageLocation, candidates []claudeFocusCandidate, maxChars int) string {
-	var best *claudeFocusCandidate
-	bestDistance := int(^uint(0) >> 1)
-	for i := range candidates {
-		candidate := &candidates[i]
-		distance := abs(candidate.pos - location.globalPos)
-		if distance < bestDistance || (distance == bestDistance && (best == nil || candidate.pos < best.pos)) {
-			best, bestDistance = candidate, distance
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return truncateRunes(strings.TrimSpace(best.text), maxChars)
 }
 
 func summarizeClaudeImages(images []Image, inputItems int) ImageCountDetails {

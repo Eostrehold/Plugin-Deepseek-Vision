@@ -3,7 +3,7 @@ set -euo pipefail
 
 repo_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 dist_dir="${DIST_DIR:-${repo_dir}/dist}"
-version="${VERSION:-0.3.0}"
+version="${VERSION:-0.3.1}"
 go_bin="${GO:-go}"
 python_bin="${PYTHON:-python3}"
 if ! command -v "$python_bin" >/dev/null 2>&1; then
