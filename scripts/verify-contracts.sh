@@ -21,6 +21,7 @@ required_responses = {
     "06-compact-rpc.json",
     "07-rpc-after-auth.json",
     "08-codex-view-image-reanalysis.json",
+    "09-string-history-view-image.json",
 }
 actual = {p.name for p in fixture_dir.glob("*.json")}
 missing = required_responses - actual
@@ -28,8 +29,8 @@ if missing:
     raise SystemExit(f"missing required fixtures: {sorted(missing)}")
 
 protocol_fixtures = {
-    root / "testdata" / "chat": {"01-user-image.json", "02-tool-image.json", "03-no-image.json"},
-    root / "testdata" / "claude": {"01-user-base64.json", "02-tool-result-url.json", "03-no-image.json"},
+    root / "testdata" / "chat": {"01-user-image.json", "02-tool-image.json", "03-no-image.json", "04-string-history-image.json"},
+    root / "testdata" / "claude": {"01-user-base64.json", "02-tool-result-url.json", "03-no-image.json", "04-string-history-image.json"},
 }
 for directory, required in protocol_fixtures.items():
     found = {p.name for p in directory.glob("*.json")}

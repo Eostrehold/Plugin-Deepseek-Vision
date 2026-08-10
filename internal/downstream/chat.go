@@ -33,12 +33,6 @@ type chatPlan struct {
 
 func (*chatPlan) Protocol() Protocol { return ProtocolChat }
 
-type chatFocusCandidate struct {
-	message int
-	pos     int
-	text    string
-}
-
 type chatPendingImage struct {
 	Image
 }
@@ -77,7 +71,7 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 	plan.inputItems = len(messages)
 
 	var pending []chatPendingImage
-	var candidates []chatFocusCandidate
+	var userContext userContextIndex
 	messageText := make(map[int]string)
 	messageKinds := make(map[int]locationKind)
 	position := 0
@@ -94,6 +88,9 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 				return nil, malformed("message.role must be a string", fmt.Sprintf("messages[%d].role", messageIndex))
 			}
 		}
+		if role == "user" {
+			userContext.recordTurn(messageIndex)
+		}
 
 		rawContent, present := messageObject["content"]
 		if !present {
@@ -107,10 +104,10 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 			// history and cannot contain an image block, so preserve it unchanged.
 			position++
 		case string:
-			if role == "user" && strings.TrimSpace(content) != "" {
-				candidates = append(candidates, chatFocusCandidate{message: messageIndex, pos: position, text: content})
-			}
 			position++
+			if role == "user" && strings.TrimSpace(content) != "" {
+				userContext.recordTurn(messageIndex, positionedUserText{pos: position, text: content})
+			}
 		case []any:
 			var textParts []string
 			for blockIndex, rawBlock := range content {
@@ -145,7 +142,7 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 					if strings.TrimSpace(text) != "" {
 						textParts = append(textParts, text)
 						if role == "user" {
-							candidates = append(candidates, chatFocusCandidate{message: messageIndex, pos: blockPosition, text: text})
+							userContext.recordTurn(messageIndex, positionedUserText{pos: blockPosition, text: text})
 						}
 					}
 				case "image_url":
@@ -174,7 +171,7 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 	}
 
 	for i := range pending {
-		pending[i].FocusHint = chooseChatFocus(pending[i].location, candidates, opt.MaxFocusChars)
+		pending[i].FocusHint = userContext.nearest(pending[i].location.input, pending[i].location.globalPos, opt.MaxFocusChars, false)
 	}
 	uniqueReferences := make(map[string]struct{}, len(pending))
 	for i := range pending {
@@ -197,7 +194,7 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 			groupIndexes[image.InputIndex] = groupIndex
 			prompt := messageText[image.InputIndex]
 			if strings.TrimSpace(prompt) == "" {
-				prompt = chooseChatFocus(image.location, candidates, opt.MaxFocusChars)
+				prompt = userContext.nearest(image.InputIndex, image.location.globalPos, opt.MaxFocusChars, false)
 			}
 			kind := messageKinds[image.InputIndex]
 			if kind == 0 {
@@ -224,7 +221,7 @@ func discoverChat(body []byte, options ...Options) (*chatPlan, error) {
 			}
 		}
 	}
-	allowPaths, err := annotateChatReanalysis(object, plan.groups, opt)
+	allowPaths, err := annotateChatReanalysis(object, plan.groups, opt, &userContext)
 	if err != nil {
 		return nil, err
 	}
@@ -263,22 +260,6 @@ func discoverChatImage(block map[string]any, location imageLocation, number int,
 		Number: number, Reference: reference, InputIndex: location.input, BlockIndex: location.block,
 		Source: source, location: location,
 	}}, nil
-}
-
-func chooseChatFocus(location imageLocation, candidates []chatFocusCandidate, maxChars int) string {
-	var best *chatFocusCandidate
-	bestDistance := int(^uint(0) >> 1)
-	for i := range candidates {
-		candidate := &candidates[i]
-		distance := abs(candidate.pos - location.globalPos)
-		if distance < bestDistance || (distance == bestDistance && candidate.pos < best.pos) {
-			best, bestDistance = candidate, distance
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return truncateRunes(strings.TrimSpace(best.text), maxChars)
 }
 
 func chatPendingImageValues(images []chatPendingImage) []Image {

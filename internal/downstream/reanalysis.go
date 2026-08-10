@@ -33,7 +33,7 @@ type toolCall struct {
 	index     int
 }
 
-func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt Options) (bool, error) {
+func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt Options, userContext *userContextIndex) (bool, error) {
 	declared := declaredResponsesTools(root)
 	allowPaths := opt.AgentReanalysisEnabled && declared[viewImageToolName]
 	for i := range groups {
@@ -43,14 +43,10 @@ func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt 
 		return false, nil
 	}
 	items, _ := root["input"].([]any)
-	lastUser := -1
+	lastUser := userContext.lastTurnIndex()
 	calls := make(map[string]toolCall)
 	for index, raw := range items {
 		item, _ := raw.(map[string]any)
-		role, _ := item["role"].(string)
-		if role == "user" {
-			lastUser = index
-		}
 		if typ, _ := item["type"].(string); typ == "function_call" {
 			name, _ := item["name"].(string)
 			callID, _ := item["call_id"].(string)
@@ -79,7 +75,7 @@ func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt 
 		}
 		inferredFocus := groups[i].Prompt
 		if call.name == viewImageToolName {
-			inferredFocus = latestResponsesUserFocusBefore(items, call.index, opt.MaxFocusChars)
+			inferredFocus = userContext.latestBefore(call.index, opt.MaxFocusChars)
 		}
 		ctx, err := buildToolContext(call, inferredFocus, opt.MaxFocusChars)
 		if err != nil {
@@ -94,7 +90,7 @@ func annotateResponsesReanalysis(root map[string]any, groups []PromptGroup, opt 
 	return allowPaths, validateActiveReanalysisCount(active)
 }
 
-func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Options) (bool, error) {
+func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Options, userContext *userContextIndex) (bool, error) {
 	if !opt.AgentReanalysisEnabled {
 		return false, nil
 	}
@@ -104,14 +100,11 @@ func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Optio
 		groups[i].AllowAgentReanalysis = allowReanalysis
 	}
 	messages, _ := root["messages"].([]any)
-	lastUser := -1
+	lastUser := userContext.lastTurnIndex()
 	calls := make(map[string]toolCall)
 	for index, raw := range messages {
 		message, _ := raw.(map[string]any)
 		role, _ := message["role"].(string)
-		if role == "user" {
-			lastUser = index
-		}
 		if role != "assistant" {
 			continue
 		}
@@ -143,7 +136,7 @@ func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Optio
 		}
 		inferredFocus := groups[i].Prompt
 		if call.name == viewImageToolName {
-			inferredFocus = latestChatUserFocusBefore(messages, call.index, opt.MaxFocusChars)
+			inferredFocus = userContext.latestBefore(call.index, opt.MaxFocusChars)
 		}
 		ctx, err := buildToolContext(call, inferredFocus, opt.MaxFocusChars)
 		if err != nil {
@@ -158,7 +151,7 @@ func annotateChatReanalysis(root map[string]any, groups []PromptGroup, opt Optio
 	return allowReanalysis, validateActiveReanalysisCount(active)
 }
 
-func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, opt Options) (bool, error) {
+func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, opt Options, userContext *userContextIndex) (bool, error) {
 	if !opt.AgentReanalysisEnabled {
 		return false, nil
 	}
@@ -168,19 +161,15 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 		groups[i].AllowAgentReanalysis = allowReanalysis
 	}
 	messages, _ := root["messages"].([]any)
-	lastOrdinaryUser := -1
+	lastOrdinaryUser := userContext.lastTurnIndex()
 	calls := make(map[string]toolCall)
 	for messageIndex, raw := range messages {
 		message, _ := raw.(map[string]any)
 		role, _ := message["role"].(string)
 		content, _ := message["content"].([]any)
-		hasOrdinaryUserContent := false
 		for _, rawBlock := range content {
 			block, _ := rawBlock.(map[string]any)
 			typeName, _ := block["type"].(string)
-			if role == "user" && typeName != "tool_result" {
-				hasOrdinaryUserContent = true
-			}
 			if role == "assistant" && typeName == "tool_use" {
 				name, _ := block["name"].(string)
 				callID, _ := block["id"].(string)
@@ -191,9 +180,6 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 					calls[callID] = toolCall{name: name, callID: callID, arguments: block["input"], index: messageIndex}
 				}
 			}
-		}
-		if role == "user" && hasOrdinaryUserContent {
-			lastOrdinaryUser = messageIndex
 		}
 	}
 	active := make(map[string]struct{})
@@ -213,7 +199,7 @@ func annotateClaudeReanalysis(root map[string]any, groups []claudePromptGroup, o
 		}
 		inferredFocus := group.Prompt
 		if call.name == viewImageToolName {
-			inferredFocus = latestClaudeUserFocusBefore(messages, call.index, opt.MaxFocusChars)
+			inferredFocus = userContext.latestBefore(call.index, opt.MaxFocusChars)
 		}
 		ctx, err := buildToolContext(call, inferredFocus, opt.MaxFocusChars)
 		if err != nil {
@@ -363,91 +349,6 @@ func terminalClaudeToolResultMessage(messages []any) int {
 		}
 	}
 	return index
-}
-
-func latestResponsesUserFocusBefore(items []any, before, maxFocus int) string {
-	for i := before - 1; i >= 0; i-- {
-		item, _ := items[i].(map[string]any)
-		role, _ := item["role"].(string)
-		if role != "user" {
-			continue
-		}
-		content, _ := item["content"].([]any)
-		var parts []string
-		for _, raw := range content {
-			block, _ := raw.(map[string]any)
-			if typ, _ := block["type"].(string); typ != "input_text" {
-				continue
-			}
-			if value, _ := block["text"].(string); strings.TrimSpace(value) != "" {
-				parts = append(parts, strings.TrimSpace(value))
-			}
-		}
-		return truncateRunes(strings.Join(parts, "\n\n"), maxFocus)
-	}
-	return ""
-}
-
-func latestChatUserFocusBefore(messages []any, before, maxFocus int) string {
-	for i := before - 1; i >= 0; i-- {
-		message, _ := messages[i].(map[string]any)
-		role, _ := message["role"].(string)
-		if role != "user" {
-			continue
-		}
-		switch content := message["content"].(type) {
-		case string:
-			return truncateRunes(strings.TrimSpace(content), maxFocus)
-		case []any:
-			var parts []string
-			for _, raw := range content {
-				block, _ := raw.(map[string]any)
-				if typ, _ := block["type"].(string); typ != "text" {
-					continue
-				}
-				if value, _ := block["text"].(string); strings.TrimSpace(value) != "" {
-					parts = append(parts, strings.TrimSpace(value))
-				}
-			}
-			return truncateRunes(strings.Join(parts, "\n\n"), maxFocus)
-		}
-		return ""
-	}
-	return ""
-}
-
-func latestClaudeUserFocusBefore(messages []any, before, maxFocus int) string {
-	for i := before - 1; i >= 0; i-- {
-		message, _ := messages[i].(map[string]any)
-		role, _ := message["role"].(string)
-		if role != "user" {
-			continue
-		}
-		switch content := message["content"].(type) {
-		case string:
-			return truncateRunes(strings.TrimSpace(content), maxFocus)
-		case []any:
-			var parts []string
-			hasOrdinary := false
-			for _, raw := range content {
-				block, _ := raw.(map[string]any)
-				typ, _ := block["type"].(string)
-				if typ == "tool_result" {
-					continue
-				}
-				hasOrdinary = true
-				if typ == "text" {
-					if value, _ := block["text"].(string); strings.TrimSpace(value) != "" {
-						parts = append(parts, strings.TrimSpace(value))
-					}
-				}
-			}
-			if hasOrdinary {
-				return truncateRunes(strings.Join(parts, "\n\n"), maxFocus)
-			}
-		}
-	}
-	return ""
 }
 
 func recognizedDeclaredTool(name string, declared map[string]bool) bool {

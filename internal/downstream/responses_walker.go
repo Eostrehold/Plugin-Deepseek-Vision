@@ -175,7 +175,7 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 	}
 	plan.inputItems = len(items)
 
-	var candidates []focusCandidate
+	var userContext userContextIndex
 	var pending []pendingImage
 	globalPos := 0
 	for inputIndex, item := range items {
@@ -186,36 +186,48 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 		}
 		role, _ := itemObject["role"].(string)
 		itemType, _ := itemObject["type"].(string)
+		if role == "user" {
+			userContext.recordTurn(inputIndex)
+		}
 
 		// Responses reasoning items may include an explicit null content field.
 		// A null content container has no blocks to inspect and must remain a
 		// valid, image-free passthrough rather than being rejected as malformed.
 		if rawContent, exists := itemObject["content"]; exists && rawContent != nil {
-			content, ok := rawContent.([]any)
-			if !ok {
-				return nil, malformed("input.content must be an array", fmt.Sprintf("input[%d].content", inputIndex))
-			}
-			for blockIndex, block := range content {
+			switch content := rawContent.(type) {
+			case string:
+				// String content is one visible traversal position and a valid source
+				// of user focus. Do not continue here: a function_call_output item may
+				// still carry a rich image output that must be inspected below.
 				globalPos++
-				blockObject, ok := block.(map[string]any)
-				if !ok {
-					return nil, malformed("input.content blocks must be objects", fmt.Sprintf("input[%d].content[%d]", inputIndex, blockIndex))
+				if role == "user" {
+					userContext.recordTurn(inputIndex, positionedUserText{pos: globalPos, text: content})
 				}
-				typeName, _ := blockObject["type"].(string)
-				if role == "user" && typeName == "input_text" {
-					if text, ok := blockObject["text"].(string); ok && strings.TrimSpace(text) != "" {
-						candidates = append(candidates, focusCandidate{input: inputIndex, pos: globalPos, text: text})
+			case []any:
+				for blockIndex, block := range content {
+					globalPos++
+					blockObject, ok := block.(map[string]any)
+					if !ok {
+						return nil, malformed("input.content blocks must be objects", fmt.Sprintf("input[%d].content[%d]", inputIndex, blockIndex))
+					}
+					typeName, _ := blockObject["type"].(string)
+					if role == "user" && typeName == "input_text" {
+						if text, ok := blockObject["text"].(string); ok && strings.TrimSpace(text) != "" {
+							userContext.recordTurn(inputIndex, positionedUserText{pos: globalPos, text: text})
+						}
+					}
+					if typeName == "input_image" {
+						image, err := discoverImage(blockObject, imageLocation{
+							kind: locationContent, input: inputIndex, block: blockIndex, globalPos: globalPos,
+						}, len(pending)+1, opt)
+						if err != nil {
+							return nil, err
+						}
+						pending = append(pending, image)
 					}
 				}
-				if typeName == "input_image" {
-					image, err := discoverImage(blockObject, imageLocation{
-						kind: locationContent, input: inputIndex, block: blockIndex, globalPos: globalPos,
-					}, len(pending)+1, opt)
-					if err != nil {
-						return nil, err
-					}
-					pending = append(pending, image)
-				}
+			default:
+				return nil, malformed("input.content must be a string or array", fmt.Sprintf("input[%d].content", inputIndex))
 			}
 		}
 
@@ -253,7 +265,7 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 		}
 	}
 	for i := range pending {
-		pending[i].FocusHint = chooseFocus(pending[i].location, candidates, opt.MaxFocusChars)
+		pending[i].FocusHint = userContext.nearest(pending[i].location.input, pending[i].location.globalPos, opt.MaxFocusChars, true)
 	}
 	uniqueReferences := make(map[string]struct{}, len(pending))
 	for i := range pending {
@@ -277,13 +289,13 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 			groupIndexes[key] = groupIndex
 			plan.groups = append(plan.groups, PromptGroup{
 				ID: len(plan.groups) + 1, InputIndex: image.InputIndex,
-				Source: image.Source, Prompt: groupPrompt(image, candidates, opt.MaxFocusChars),
+				Source: image.Source, Prompt: groupPrompt(image, &userContext, opt.MaxFocusChars),
 				locationKind: image.location.kind,
 			})
 		}
 		plan.groups[groupIndex].Images = append(plan.groups[groupIndex].Images, image)
 	}
-	allowPaths, err := annotateResponsesReanalysis(object, plan.groups, opt)
+	allowPaths, err := annotateResponsesReanalysis(object, plan.groups, opt, &userContext)
 	if err != nil {
 		return nil, err
 	}
@@ -292,17 +304,11 @@ func Discover(body []byte, options ...Options) (*responsesPlan, error) {
 	return plan, nil
 }
 
-func groupPrompt(image Image, candidates []focusCandidate, maxChars int) string {
-	var parts []string
-	for i := range candidates {
-		if candidates[i].input == image.InputIndex {
-			parts = append(parts, strings.TrimSpace(candidates[i].text))
-		}
+func groupPrompt(image Image, context *userContextIndex, maxChars int) string {
+	if text := context.itemText(image.InputIndex, maxChars); text != "" {
+		return text
 	}
-	if text := strings.TrimSpace(strings.Join(parts, "\n\n")); text != "" {
-		return truncateRunes(text, maxChars)
-	}
-	return chooseFocus(image.location, candidates, maxChars)
+	return context.nearest(image.InputIndex, image.location.globalPos, maxChars, false)
 }
 
 type pendingImage struct {
@@ -345,42 +351,6 @@ func summarizeImages(images []Image, inputItems int) ImageCountDetails {
 	details.DuplicateImageBlocks = details.ImageBlocks - details.UniqueImageReferences
 	details.EarlierImageBlocks = details.ImageBlocks - details.LastImageItemBlocks
 	return details
-}
-
-type focusCandidate struct {
-	input int
-	pos   int
-	text  string
-}
-
-func chooseFocus(location imageLocation, candidates []focusCandidate, maxChars int) string {
-	var best *focusCandidate
-	bestDistance := int(^uint(0) >> 1)
-	// Prefer text in the same user input item. This makes each image in a
-	// multi-image message use the nearest preceding/following instruction.
-	for i := range candidates {
-		candidate := &candidates[i]
-		distance := abs(candidate.pos - location.globalPos)
-		if candidate.input != location.input {
-			continue
-		}
-		if distance < bestDistance || (distance == bestDistance && candidate.pos < best.pos) {
-			best, bestDistance = candidate, distance
-		}
-	}
-	if best == nil {
-		for i := range candidates {
-			candidate := &candidates[i]
-			distance := abs(candidate.pos - location.globalPos)
-			if distance < bestDistance || (distance == bestDistance && candidate.pos < best.pos) {
-				best, bestDistance = candidate, distance
-			}
-		}
-	}
-	if best == nil {
-		return ""
-	}
-	return truncateRunes(strings.TrimSpace(best.text), maxChars)
 }
 
 func discoverImage(block map[string]any, location imageLocation, number int, opt Options) (pendingImage, error) {

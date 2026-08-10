@@ -60,6 +60,26 @@ func TestResponsesViewImageTailToolOutputBecomesActiveReanalysis(t *testing.T) {
 	}
 }
 
+func TestResponsesEmptyStringTurnDoesNotReuseOlderViewImageFocus(t *testing.T) {
+	body := []byte(`{"tools":[{"type":"function","name":"view_image"}],"input":[` +
+		`{"role":"user","content":"stale focus"},` +
+		`{"role":"user","content":"   "},` +
+		`{"type":"function_call","name":"view_image","call_id":"call_empty","arguments":"{}"},` +
+		`{"type":"function_call_output","call_id":"call_empty","output":[{"type":"input_image","image_url":"` + tinyImage + `"}]}` +
+		`]}`)
+	plan, err := Discover(body, Options{AgentReanalysisEnabled: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	groups := plan.Groups()
+	if len(groups) != 1 || groups[0].Tool == nil {
+		t.Fatalf("groups=%#v", groups)
+	}
+	if groups[0].Tool.Focus != "" || strings.Contains(groups[0].Prompt, "stale focus") {
+		t.Fatalf("stale focus leaked: group=%#v", groups[0])
+	}
+}
+
 func TestResponsesReanalysisRequiresDeclaredAssociatedTailCall(t *testing.T) {
 	tests := []struct {
 		name   string

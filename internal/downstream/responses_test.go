@@ -129,6 +129,7 @@ func TestDiscoverFixtures(t *testing.T) {
 		{"04-no-image.json", 0},
 		{"05-stream.json", 1},
 		{"06-compact.json", 1},
+		{"09-string-history-view-image.json", 1},
 	}
 	for _, fixture := range fixtures {
 		t.Run(fixture.name, func(t *testing.T) {
@@ -226,6 +227,50 @@ func TestReasoningItemWithNullContentPassesThrough(t *testing.T) {
 	out, err := plan.RewriteGroupsText(nil)
 	if err != nil || string(out) != body {
 		t.Fatalf("null-content reasoning item was not preserved: %s, err=%v", out, err)
+	}
+}
+
+func TestStringItemContentIsValidAndPreserved(t *testing.T) {
+	body := `{"input":[{"type":"message","role":"assistant","content":"plain response text"}]}`
+	plan, err := Discover([]byte(body))
+	if err != nil {
+		t.Fatalf("string item content rejected: %v", err)
+	}
+	if plan.HasImages() {
+		t.Fatal("string item content unexpectedly produced an image")
+	}
+	out, err := plan.RewriteGroupsText(nil)
+	if err != nil || string(out) != body {
+		t.Fatalf("string item content changed: %s, err=%v", out, err)
+	}
+}
+
+func TestStringItemContentDoesNotHideRichFunctionOutput(t *testing.T) {
+	body := `{"input":[{"type":"function_call_output","call_id":"call_1","content":"status text","output":[{"type":"input_image","image_url":"https://example.com/tool.png"}]}]}`
+	plan, err := Discover([]byte(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := len(plan.Images()); got != 1 {
+		t.Fatalf("images = %d, want 1", got)
+	}
+	out, err := plan.RewriteGroupsText([]string{"tool image description"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(out), `"content":"status text"`) || strings.Contains(string(out), "https://example.com/tool.png") {
+		t.Fatalf("rich function output rewrite = %s", out)
+	}
+}
+
+func TestInvalidItemContentTypeErrorContract(t *testing.T) {
+	_, err := Discover([]byte(`{"input":[{"content":{"type":"input_text","text":"invalid container"}}]}`))
+	var plannerErr *Error
+	if !errors.As(err, &plannerErr) {
+		t.Fatalf("error = %T, want *Error", err)
+	}
+	if plannerErr.Kind != ErrorMalformedRequest || plannerErr.Message != "input.content must be a string or array" || plannerErr.Path != "input[0].content" {
+		t.Fatalf("error contract = %#v", plannerErr)
 	}
 }
 
@@ -561,6 +606,7 @@ func TestParseVLMText(t *testing.T) {
 func FuzzDiscoverNeverPanics(f *testing.F) {
 	for _, seed := range []string{
 		`{}`, `{"input":[]}`, `{"input":"text"}`, `{"input":[{"content":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}]}`,
+		`{"input":[{"role":"user","content":"string focus"},{"type":"function_call_output","output":[{"type":"input_image","image_url":"data:image/png;base64,AA=="}]}]}`,
 	} {
 		f.Add([]byte(seed))
 	}

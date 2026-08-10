@@ -1,0 +1,23 @@
+{
+  "model": "deepseek-v4-flash",
+  "max_tokens": 256,
+  "messages": [
+    {
+      "role": "user",
+      "content": "Inspect the dashboard for alignment, overflow, and abnormal whitespace."
+    },
+    {
+      "role": "user",
+      "content": [
+        {
+          "type": "image",
+          "source": {
+            "type": "base64",
+            "media_type": "image/png",
+            "data": "QUJD"
+          }
+        }
+      ]
+    }
+  ]
+}
