@@ -7,7 +7,7 @@
 - Release artifacts target Linux, macOS, and Windows on amd64/arm64. Each asset
   is a native CGO build and must match the CLIProxyAPI host platform; do not
   copy `.so`, `.dylib`, or `.dll` files between platforms. CLIProxyAPI also
-  supports FreeBSD amd64 dynamic plugins, but v0.3.0 does not publish that
+  supports FreeBSD amd64 dynamic plugins, but v0.3.1 does not publish that
   asset until it has passed native FreeBSD acceptance.
 - The plugin calls CLIProxyAPI `host.model.execute` using the OpenAI Responses
   protocol and an ordered primary-plus-fallback model chain. Provider-specific
@@ -64,7 +64,7 @@
   and must not be left enabled as normal production logging.
 - `deepseek-v4-pro` is retained as a future-supported target, but its Responses
   availability currently depends on the upstream service. It is not required,
-  probed, or release-tested in v0.3.0; real validation uses `deepseek-v4-flash`.
+  probed, or release-tested in v0.3.1; real validation uses `deepseek-v4-flash`.
 - Agent reanalysis is disabled by default and only handles declared
   `view_image`/`deepseek_vision_reanalyze` rich tool output. The plugin trusts
   actual image blocks only. `attachment_ids` are opaque Agent-owned handles;

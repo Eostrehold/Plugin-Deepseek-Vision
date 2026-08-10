@@ -27,10 +27,10 @@ services:
   # extract the .so into the mounted plugin directory.
   deepseek-vision-build:
     profiles: ["build"]
-    image: deepseek-vision-builder:${VERSION:-0.3.0}
+    image: deepseek-vision-builder:${VERSION:-0.3.1}
     build:
       context: ..
       dockerfile: docker/Dockerfile.plugin
       target: artifact
       args:
-        VERSION: ${VERSION:-0.3.0}
+        VERSION: ${VERSION:-0.3.1}
