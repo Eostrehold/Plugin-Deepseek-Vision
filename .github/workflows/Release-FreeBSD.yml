@@ -11,10 +11,17 @@ on:
 permissions:
   contents: write
 
+env:
+  GO_VERSION: "1.26.4"
+  TARGET_GOOS: "freebsd"
+  TARGET_GOARCH: "amd64"
+  DIST_DIR: "dist"
+
 jobs:
   version:
     name: Resolve version
     runs-on: ubuntu-24.04
+
     outputs:
       value: ${{ steps.version.outputs.value }}
 
@@ -55,97 +62,289 @@ jobs:
           memory: 6G
           cpu_count: 4
 
-      - name: Install dependencies
+      - name: Install FreeBSD dependencies
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
 
           sudo pkg update
-          sudo pkg install -y curl ca_root_nss
 
-      - name: Install Go 1.26.4
+          sudo pkg install -y \
+            ca_root_nss \
+            curl \
+            git \
+            python3
+
+          echo "=== Installed dependencies ==="
+
+          echo "--- Python ---"
+          python3 --version
+
+          echo "--- Git ---"
+          git --version
+
+          echo "--- curl ---"
+          curl --version | head -n 1
+
+          echo "--- Clang ---"
+          clang --version | head -n 1
+
+          echo "--- nm ---"
+          nm --version || true
+
+      - name: Install Go
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
 
-          GO_VERSION="1.26.4"
           GO_ARCHIVE="go${GO_VERSION}.freebsd-amd64.tar.gz"
+
+          # Go 1.26.4 FreeBSD amd64 SHA256.
           GO_SHA256="e91e96c0d3bd8f770e5a0facaf21d010a84e1c9440d830210cb3c223f0b7fb50"
+
+          echo "Downloading ${GO_ARCHIVE}..."
 
           curl -fsSL \
             "https://go.dev/dl/${GO_ARCHIVE}" \
             -o "/tmp/${GO_ARCHIVE}"
 
-          echo "${GO_SHA256}  /tmp/${GO_ARCHIVE}" | sha256 -c -
+          echo "Verifying Go archive..."
+
+          echo "${GO_SHA256}  /tmp/${GO_ARCHIVE}" \
+            | sha256 -c -
+
+          echo "Installing Go..."
 
           sudo rm -rf /usr/local/go
-          sudo tar -C /usr/local -xzf "/tmp/${GO_ARCHIVE}"
 
-          /usr/local/go/bin/go version
+          sudo tar \
+            -C /usr/local \
+            -xzf "/tmp/${GO_ARCHIVE}"
+
+          export PATH="/usr/local/go/bin:${PATH}"
+
+          echo "=== Go ==="
+          go version
 
       - name: Verify FreeBSD environment
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
 
-          echo "=== OS ==="
+          export PATH="/usr/local/go/bin:${PATH}"
+
+          echo "========================================"
+          echo "FreeBSD build environment"
+          echo "========================================"
+
+          echo
+          echo "--- Operating System ---"
           uname -a
 
-          echo "=== Architecture ==="
+          echo
+          echo "--- Architecture ---"
           uname -m
 
-          echo "=== Go ==="
-          /usr/local/go/bin/go version
+          echo
+          echo "--- Go ---"
+          go version
+
+          echo
+          echo "--- Go environment ---"
+          echo "GOOS=$(go env GOOS)"
+          echo "GOARCH=$(go env GOARCH)"
+          echo "CGO_ENABLED=$(go env CGO_ENABLED)"
+
+          echo
+          echo "--- Python ---"
+          python3 --version
+
+          echo
+          echo "--- Git ---"
+          git --version
+
+          echo
+          echo "--- Compiler ---"
+          clang --version | head -n 1
+
+          echo
+          echo "--- NM ---"
+          nm --version || true
+
+          echo
+          echo "========================================"
+          echo "Validation"
+          echo "========================================"
 
           test "$(uname -s)" = "FreeBSD"
           test "$(uname -m)" = "amd64"
-          test "$(/usr/local/go/bin/go env GOOS)" = "freebsd"
-          test "$(/usr/local/go/bin/go env GOARCH)" = "amd64"
 
-      - name: Build and verify release asset
+          test "$(go env GOOS)" = "freebsd"
+          test "$(go env GOARCH)" = "amd64"
+
+          test -x /usr/local/go/bin/go
+          command -v python3
+          command -v git
+          command -v clang
+          command -v nm
+
+          echo
+          echo "FreeBSD environment OK."
+
+      - name: Build package
         shell: cpa.sh {0} --environment-variables GO_VERSION VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR
         env:
-          GO_VERSION: "1.26.4"
+          GO_VERSION: ${{ env.GO_VERSION }}
           VERSION: ${{ needs.version.outputs.value }}
-          TARGET_GOOS: freebsd
-          TARGET_GOARCH: amd64
-          DIST_DIR: dist
+          TARGET_GOOS: ${{ env.TARGET_GOOS }}
+          TARGET_GOARCH: ${{ env.TARGET_GOARCH }}
+          DIST_DIR: ${{ env.DIST_DIR }}
         run: |
           set -euo pipefail
 
           export PATH="/usr/local/go/bin:${PATH}"
 
+          echo "========================================"
+          echo "Building FreeBSD release"
+          echo "========================================"
+
+          echo "VERSION=${VERSION}"
+          echo "TARGET_GOOS=${TARGET_GOOS}"
+          echo "TARGET_GOARCH=${TARGET_GOARCH}"
+          echo "GO_VERSION=${GO_VERSION}"
+          echo "DIST_DIR=${DIST_DIR}"
+
+          echo
+          echo "Go:"
+          go version
+
+          echo
+          echo "Target:"
+          go env GOOS
+          go env GOARCH
+
+          echo
+          echo "Running ci-package.sh..."
+
           ./scripts/ci-package.sh
 
-      - name: Verify release asset
-        shell: cpa.sh {0}
+      - name: Verify release package
+        shell: cpa.sh {0} --environment-variables VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR
         env:
           VERSION: ${{ needs.version.outputs.value }}
+          TARGET_GOOS: ${{ env.TARGET_GOOS }}
+          TARGET_GOARCH: ${{ env.TARGET_GOARCH }}
+          DIST_DIR: ${{ env.DIST_DIR }}
         run: |
           set -euo pipefail
 
-          archive="dist/deepseek-vision_${VERSION}_freebsd_amd64.zip"
+          archive="${DIST_DIR}/deepseek-vision_${VERSION}_${TARGET_GOOS}_${TARGET_GOARCH}.zip"
+          checksums="${DIST_DIR}/checksums.txt"
+
+          echo "========================================"
+          echo "Verifying release package"
+          echo "========================================"
+
+          echo
+          echo "Archive:"
+          echo "$archive"
 
           if [[ ! -f "$archive" ]]; then
-            echo "Release archive not found: $archive" >&2
-            echo "Contents of dist:" >&2
-            find dist -maxdepth 2 -type f -print >&2 || true
+            echo "ERROR: Release archive not found." >&2
+            echo
+            echo "dist contents:" >&2
+            find "$DIST_DIR" -maxdepth 2 -type f -print >&2 || true
             exit 1
           fi
 
-          echo "Release asset:"
+          if [[ ! -s "$archive" ]]; then
+            echo "ERROR: Release archive is empty." >&2
+            exit 1
+          fi
+
+          echo
+          echo "Archive size:"
           ls -lh "$archive"
 
-      - name: Upload artifact
+          echo
+          echo "Archive contents:"
+
+          unzip -l "$archive"
+
+          echo
+          echo "Checksum file:"
+
+          if [[ ! -f "$checksums" ]]; then
+            echo "ERROR: checksums.txt not found." >&2
+            exit 1
+          fi
+
+          cat "$checksums"
+
+          echo
+          echo "Verifying SHA256..."
+
+          python3 - "$archive" "$checksums" <<'PY'
+          import hashlib
+          import sys
+          from pathlib import Path
+
+          archive = Path(sys.argv[1])
+          checksums = Path(sys.argv[2])
+
+          actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+          expected = ""
+
+          for line in checksums.read_text(encoding="ascii").splitlines():
+              parts = line.split(maxsplit=1)
+              if len(parts) == 2 and parts[1] == archive.name:
+                  expected = parts[0]
+                  break
+
+          if not expected:
+              raise SystemExit(
+                  f"no checksum entry found for {archive.name}"
+              )
+
+          if expected != actual:
+              raise SystemExit(
+                  "checksum mismatch:\n"
+                  f"expected: {expected}\n"
+                  f"actual:   {actual}"
+              )
+
+          print(f"SHA256 verified: {actual}")
+          PY
+
+          echo
+          echo "Release package verified successfully."
+
+      - name: Sync build artifacts from FreeBSD VM
+        run: |
+          set -euo pipefail
+
+          mkdir -p dist
+
+          cpa.sh --sync-files vm-to-runner
+
+          echo "Runner dist contents:"
+          find dist -maxdepth 2 -type f -print
+
+      - name: Upload FreeBSD artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-freebsd-amd64
-          path: dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip
+          path: |
+            dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip
+            dist/checksums.txt
           if-no-files-found: error
 
   publish:
     name: Update draft release
-    needs: [version, package]
+    needs:
+      - version
+      - package
+
     runs-on: ubuntu-24.04
 
     steps:
@@ -155,17 +354,37 @@ jobs:
           name: release-freebsd-amd64
           path: dist
 
-      - name: Generate checksum
+      - name: Verify downloaded files
         shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
         run: |
           set -euo pipefail
 
-          archive="dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip"
+          archive="dist/deepseek-vision_${VERSION}_freebsd_amd64.zip"
+          checksums="dist/checksums.txt"
 
           test -f "$archive"
+          test -s "$archive"
+
+          test -f "$checksums"
+          test -s "$checksums"
+
+          echo "Downloaded files:"
+          ls -lh dist
+
+      - name: Generate aggregate checksum
+        shell: bash
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          archive="dist/deepseek-vision_${VERSION}_freebsd_amd64.zip"
 
           sha256sum "$archive" > dist/checksums.txt
 
+          echo "Final checksum:"
           cat dist/checksums.txt
 
       - name: Upload assets to draft release
