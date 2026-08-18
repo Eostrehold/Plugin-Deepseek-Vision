@@ -25,6 +25,8 @@ jobs:
         env:
           RELEASE_INPUT: ${{ inputs.version }}
         run: |
+          set -euo pipefail
+
           version="$RELEASE_INPUT"
 
           if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
@@ -56,6 +58,8 @@ jobs:
       - name: Install dependencies
         shell: cpa.sh {0}
         run: |
+          set -euo pipefail
+
           sudo pkg update
           sudo pkg install -y curl ca_root_nss
 
@@ -99,7 +103,7 @@ jobs:
           test "$(/usr/local/go/bin/go env GOARCH)" = "amd64"
 
       - name: Build and verify release asset
-        shell: cpa.sh {0}
+        shell: cpa.sh {0} --environment-variables GO_VERSION VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR
         env:
           GO_VERSION: "1.26.4"
           VERSION: ${{ needs.version.outputs.value }}
@@ -132,11 +136,6 @@ jobs:
           echo "Release asset:"
           ls -lh "$archive"
 
-      - name: Sync release asset
-        run: |
-          mkdir -p dist
-          cpa.sh --sync-files vm-to-runner
-
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
@@ -158,19 +157,16 @@ jobs:
 
       - name: Generate checksum
         shell: bash
-        env:
-          DIST_DIR: dist
         run: |
           set -euo pipefail
 
-          archive="${DIST_DIR}/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip"
+          archive="dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip"
 
           test -f "$archive"
 
-          sha256sum "$archive" > "${DIST_DIR}/checksums.txt"
+          sha256sum "$archive" > dist/checksums.txt
 
-          echo "Generated checksums:"
-          cat "${DIST_DIR}/checksums.txt"
+          cat dist/checksums.txt
 
       - name: Upload assets to draft release
         uses: softprops/action-gh-release@v2
