@@ -11,12 +11,6 @@ on:
 permissions:
   contents: write
 
-env:
-  GO_VERSION: "1.26.4"
-  TARGET_GOOS: "freebsd"
-  TARGET_GOARCH: "amd64"
-  DIST_DIR: "dist"
-
 jobs:
   version:
     name: Resolve version
@@ -49,8 +43,16 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout
+      # ============================================================
+      # Checkout
+      # ============================================================
+
+      - name: Checkout repository
         uses: actions/checkout@v4
+
+      # ============================================================
+      # Start FreeBSD
+      # ============================================================
 
       - name: Start FreeBSD VM
         uses: cross-platform-actions/action@v1.3.0
@@ -61,6 +63,10 @@ jobs:
           shell: bash
           memory: 6G
           cpu_count: 4
+
+      # ============================================================
+      # Install system dependencies
+      # ============================================================
 
       - name: Install FreeBSD dependencies
         shell: cpa.sh {0}
@@ -73,9 +79,11 @@ jobs:
             ca_root_nss \
             curl \
             git \
-            python3
+            python3 \
+            unzip
 
-          echo "=== Installed dependencies ==="
+          echo
+          echo "========== Dependencies =========="
 
           echo "--- Python ---"
           python3 --version
@@ -86,25 +94,33 @@ jobs:
           echo "--- curl ---"
           curl --version | head -n 1
 
-          echo "--- Clang ---"
+          echo "--- clang ---"
           clang --version | head -n 1
 
           echo "--- nm ---"
           nm --version || true
 
-      - name: Install Go
+          echo "=================================="
+          echo
+
+      # ============================================================
+      # Install Go
+      # ============================================================
+
+      - name: Install Go 1.26.4
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
 
+          GO_VERSION="1.26.4"
           GO_ARCHIVE="go${GO_VERSION}.freebsd-amd64.tar.gz"
 
-          # Go 1.26.4 FreeBSD amd64 SHA256.
+          # SHA256 from the official Go download page.
           GO_SHA256="e91e96c0d3bd8f770e5a0facaf21d010a84e1c9440d830210cb3c223f0b7fb50"
 
           echo "Downloading ${GO_ARCHIVE}..."
 
-          curl -fsSL \
+          curl -fL \
             "https://go.dev/dl/${GO_ARCHIVE}" \
             -o "/tmp/${GO_ARCHIVE}"
 
@@ -113,7 +129,7 @@ jobs:
           echo "${GO_SHA256}  /tmp/${GO_ARCHIVE}" \
             | sha256 -c -
 
-          echo "Installing Go..."
+          echo "Installing Go ${GO_VERSION}..."
 
           sudo rm -rf /usr/local/go
 
@@ -123,10 +139,25 @@ jobs:
 
           export PATH="/usr/local/go/bin:${PATH}"
 
-          echo "=== Go ==="
+          echo
+          echo "========== Go =========="
+
           go version
 
-      - name: Verify FreeBSD environment
+          echo
+          echo "GOOS=$(go env GOOS)"
+          echo "GOARCH=$(go env GOARCH)"
+
+          echo "========================"
+
+          test "$(go env GOOS)" = "freebsd"
+          test "$(go env GOARCH)" = "amd64"
+
+      # ============================================================
+      # Verify native environment
+      # ============================================================
+
+      - name: Verify native FreeBSD environment
         shell: cpa.sh {0}
         run: |
           set -euo pipefail
@@ -134,41 +165,45 @@ jobs:
           export PATH="/usr/local/go/bin:${PATH}"
 
           echo "========================================"
-          echo "FreeBSD build environment"
+          echo "Native FreeBSD Build Environment"
           echo "========================================"
 
           echo
-          echo "--- Operating System ---"
+          echo "Operating system:"
           uname -a
 
           echo
-          echo "--- Architecture ---"
+          echo "Kernel:"
+          uname -sr
+
+          echo
+          echo "Architecture:"
           uname -m
 
           echo
-          echo "--- Go ---"
+          echo "Go:"
           go version
 
           echo
-          echo "--- Go environment ---"
-          echo "GOOS=$(go env GOOS)"
-          echo "GOARCH=$(go env GOARCH)"
-          echo "CGO_ENABLED=$(go env CGO_ENABLED)"
+          echo "Go environment:"
+          go env GOOS
+          go env GOARCH
+          go env CGO_ENABLED
 
           echo
-          echo "--- Python ---"
+          echo "Python:"
           python3 --version
 
           echo
-          echo "--- Git ---"
+          echo "Git:"
           git --version
 
           echo
-          echo "--- Compiler ---"
+          echo "Compiler:"
           clang --version | head -n 1
 
           echo
-          echo "--- NM ---"
+          echo "NM:"
           nm --version || true
 
           echo
@@ -182,23 +217,29 @@ jobs:
           test "$(go env GOOS)" = "freebsd"
           test "$(go env GOARCH)" = "amd64"
 
-          test -x /usr/local/go/bin/go
+          test "$(go env CGO_ENABLED)" = "1"
+
+          command -v go
           command -v python3
           command -v git
           command -v clang
           command -v nm
 
           echo
-          echo "FreeBSD environment OK."
+          echo "FreeBSD environment is ready."
 
-      - name: Build package
-        shell: cpa.sh {0} --environment-variables GO_VERSION VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR
+      # ============================================================
+      # Build
+      # ============================================================
+
+      - name: Build FreeBSD release
+        shell: cpa.sh {0} --environment-variables VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR GO_VERSION
         env:
-          GO_VERSION: ${{ env.GO_VERSION }}
           VERSION: ${{ needs.version.outputs.value }}
-          TARGET_GOOS: ${{ env.TARGET_GOOS }}
-          TARGET_GOARCH: ${{ env.TARGET_GOARCH }}
-          DIST_DIR: ${{ env.DIST_DIR }}
+          TARGET_GOOS: freebsd
+          TARGET_GOARCH: amd64
+          DIST_DIR: dist
+          GO_VERSION: "1.26.4"
         run: |
           set -euo pipefail
 
@@ -208,33 +249,42 @@ jobs:
           echo "Building FreeBSD release"
           echo "========================================"
 
+          echo
           echo "VERSION=${VERSION}"
           echo "TARGET_GOOS=${TARGET_GOOS}"
           echo "TARGET_GOARCH=${TARGET_GOARCH}"
-          echo "GO_VERSION=${GO_VERSION}"
           echo "DIST_DIR=${DIST_DIR}"
+          echo "GO_VERSION=${GO_VERSION}"
 
           echo
           echo "Go:"
           go version
 
           echo
-          echo "Target:"
-          go env GOOS
-          go env GOARCH
+          echo "Native target:"
+          echo "GOOS=$(go env GOOS)"
+          echo "GOARCH=$(go env GOARCH)"
 
           echo
-          echo "Running ci-package.sh..."
+          echo "Running:"
+          echo "./scripts/ci-package.sh"
 
           ./scripts/ci-package.sh
 
-      - name: Verify release package
+          echo
+          echo "Build completed."
+
+      # ============================================================
+      # Verify output
+      # ============================================================
+
+      - name: Verify release output
         shell: cpa.sh {0} --environment-variables VERSION TARGET_GOOS TARGET_GOARCH DIST_DIR
         env:
           VERSION: ${{ needs.version.outputs.value }}
-          TARGET_GOOS: ${{ env.TARGET_GOOS }}
-          TARGET_GOARCH: ${{ env.TARGET_GOARCH }}
-          DIST_DIR: ${{ env.DIST_DIR }}
+          TARGET_GOOS: freebsd
+          TARGET_GOARCH: amd64
+          DIST_DIR: dist
         run: |
           set -euo pipefail
 
@@ -242,43 +292,43 @@ jobs:
           checksums="${DIST_DIR}/checksums.txt"
 
           echo "========================================"
-          echo "Verifying release package"
+          echo "Release Output"
           echo "========================================"
 
           echo
-          echo "Archive:"
+          echo "Expected archive:"
           echo "$archive"
 
           if [[ ! -f "$archive" ]]; then
-            echo "ERROR: Release archive not found." >&2
+            echo "ERROR: release archive not found" >&2
+
             echo
-            echo "dist contents:" >&2
+            echo "Available files:"
             find "$DIST_DIR" -maxdepth 2 -type f -print >&2 || true
+
             exit 1
           fi
 
           if [[ ! -s "$archive" ]]; then
-            echo "ERROR: Release archive is empty." >&2
+            echo "ERROR: release archive is empty" >&2
+            exit 1
+          fi
+
+          if [[ ! -f "$checksums" ]]; then
+            echo "ERROR: checksums.txt not found" >&2
             exit 1
           fi
 
           echo
-          echo "Archive size:"
+          echo "Archive:"
           ls -lh "$archive"
 
           echo
           echo "Archive contents:"
-
           unzip -l "$archive"
 
           echo
-          echo "Checksum file:"
-
-          if [[ ! -f "$checksums" ]]; then
-            echo "ERROR: checksums.txt not found." >&2
-            exit 1
-          fi
-
+          echo "Checksum:"
           cat "$checksums"
 
           echo
@@ -293,10 +343,14 @@ jobs:
           checksums = Path(sys.argv[2])
 
           actual = hashlib.sha256(archive.read_bytes()).hexdigest()
+
           expected = ""
 
-          for line in checksums.read_text(encoding="ascii").splitlines():
+          for line in checksums.read_text(
+              encoding="ascii"
+          ).splitlines():
               parts = line.split(maxsplit=1)
+
               if len(parts) == 2 and parts[1] == archive.name:
                   expected = parts[0]
                   break
@@ -317,18 +371,11 @@ jobs:
           PY
 
           echo
-          echo "Release package verified successfully."
+          echo "Release output verified successfully."
 
-      - name: Sync build artifacts from FreeBSD VM
-        run: |
-          set -euo pipefail
-
-          mkdir -p dist
-
-          cpa.sh --sync-files vm-to-runner
-
-          echo "Runner dist contents:"
-          find dist -maxdepth 2 -type f -print
+      # ============================================================
+      # Upload GitHub artifact
+      # ============================================================
 
       - name: Upload FreeBSD artifact
         uses: actions/upload-artifact@v4
@@ -338,6 +385,10 @@ jobs:
             dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip
             dist/checksums.txt
           if-no-files-found: error
+
+  # ================================================================
+  # Publish
+  # ================================================================
 
   publish:
     name: Update draft release
@@ -354,7 +405,7 @@ jobs:
           name: release-freebsd-amd64
           path: dist
 
-      - name: Verify downloaded files
+      - name: Verify downloaded artifact
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.value }}
@@ -364,16 +415,27 @@ jobs:
           archive="dist/deepseek-vision_${VERSION}_freebsd_amd64.zip"
           checksums="dist/checksums.txt"
 
+          echo "========================================"
+          echo "Downloaded artifacts"
+          echo "========================================"
+
+          find dist -maxdepth 2 -type f -print
+
           test -f "$archive"
           test -s "$archive"
 
           test -f "$checksums"
           test -s "$checksums"
 
-          echo "Downloaded files:"
-          ls -lh dist
+          echo
+          echo "Archive:"
+          ls -lh "$archive"
 
-      - name: Generate aggregate checksum
+          echo
+          echo "Checksum:"
+          cat "$checksums"
+
+      - name: Generate final checksum
         shell: bash
         env:
           VERSION: ${{ needs.version.outputs.value }}
