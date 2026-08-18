@@ -1,0 +1,183 @@
+name: Release FreeBSD
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Semver without the leading v"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    name: Resolve version
+    runs-on: ubuntu-24.04
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+
+    steps:
+      - name: Resolve release version
+        id: version
+        shell: bash
+        env:
+          RELEASE_INPUT: ${{ inputs.version }}
+        run: |
+          version="$RELEASE_INPUT"
+
+          if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid semantic version: $version" >&2
+            exit 1
+          fi
+
+          echo "value=$version" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package freebsd/amd64
+    needs: version
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Start FreeBSD VM
+        uses: cross-platform-actions/action@v1.3.0
+        with:
+          operating_system: freebsd
+          architecture: x86-64
+          version: "15.1"
+          shell: bash
+          memory: 6G
+          cpu_count: 4
+
+      - name: Install dependencies
+        shell: cpa.sh {0}
+        run: |
+          sudo pkg update
+          sudo pkg install -y curl ca_root_nss
+
+      - name: Install Go 1.26.4
+        shell: cpa.sh {0}
+        run: |
+          set -euo pipefail
+
+          GO_VERSION="1.26.4"
+          GO_ARCHIVE="go${GO_VERSION}.freebsd-amd64.tar.gz"
+          GO_SHA256="e91e96c0d3bd8f770e5a0facaf21d010a84e1c9440d830210cb3c223f0b7fb50"
+
+          curl -fsSL \
+            "https://go.dev/dl/${GO_ARCHIVE}" \
+            -o "/tmp/${GO_ARCHIVE}"
+
+          echo "${GO_SHA256}  /tmp/${GO_ARCHIVE}" | sha256 -c -
+
+          sudo rm -rf /usr/local/go
+          sudo tar -C /usr/local -xzf "/tmp/${GO_ARCHIVE}"
+
+          /usr/local/go/bin/go version
+
+      - name: Verify FreeBSD environment
+        shell: cpa.sh {0}
+        run: |
+          set -euo pipefail
+
+          echo "=== OS ==="
+          uname -a
+
+          echo "=== Architecture ==="
+          uname -m
+
+          echo "=== Go ==="
+          /usr/local/go/bin/go version
+
+          test "$(uname -s)" = "FreeBSD"
+          test "$(uname -m)" = "amd64"
+          test "$(/usr/local/go/bin/go env GOOS)" = "freebsd"
+          test "$(/usr/local/go/bin/go env GOARCH)" = "amd64"
+
+      - name: Build and verify release asset
+        shell: cpa.sh {0}
+        env:
+          GO_VERSION: "1.26.4"
+          VERSION: ${{ needs.version.outputs.value }}
+          TARGET_GOOS: freebsd
+          TARGET_GOARCH: amd64
+          DIST_DIR: dist
+        run: |
+          set -euo pipefail
+
+          export PATH="/usr/local/go/bin:${PATH}"
+
+          ./scripts/ci-package.sh
+
+      - name: Verify release asset
+        shell: cpa.sh {0}
+        env:
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          set -euo pipefail
+
+          archive="dist/deepseek-vision_${VERSION}_freebsd_amd64.zip"
+
+          if [[ ! -f "$archive" ]]; then
+            echo "Release archive not found: $archive" >&2
+            echo "Contents of dist:" >&2
+            find dist -maxdepth 2 -type f -print >&2 || true
+            exit 1
+          fi
+
+          echo "Release asset:"
+          ls -lh "$archive"
+
+      - name: Sync release asset
+        run: |
+          mkdir -p dist
+          cpa.sh --sync-files vm-to-runner
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-freebsd-amd64
+          path: dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip
+          if-no-files-found: error
+
+  publish:
+    name: Update draft release
+    needs: [version, package]
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Download FreeBSD artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: release-freebsd-amd64
+          path: dist
+
+      - name: Generate checksum
+        shell: bash
+        env:
+          DIST_DIR: dist
+        run: |
+          set -euo pipefail
+
+          archive="${DIST_DIR}/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip"
+
+          test -f "$archive"
+
+          sha256sum "$archive" > "${DIST_DIR}/checksums.txt"
+
+          echo "Generated checksums:"
+          cat "${DIST_DIR}/checksums.txt"
+
+      - name: Upload assets to draft release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ needs.version.outputs.value }}
+          target_commitish: ${{ github.sha }}
+          draft: true
+          files: |
+            dist/deepseek-vision_${{ needs.version.outputs.value }}_freebsd_amd64.zip
+            dist/checksums.txt
