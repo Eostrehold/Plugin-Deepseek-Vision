@@ -1,0 +1,20 @@
+{
+  "schema_version": 1,
+  "plugins": [
+    {
+      "id": "deepseek-vision",
+      "name": "DeepSeek Vision",
+      "description": "Adds reliable image understanding to text-only DeepSeek models by analyzing request images with a host-configured vision model and transparently replacing them with visual context.",
+      "author": "Zesuy",
+      "version": "0.3.1",
+      "repository": "https://github.com/Eostrehold/Plugin-Deepseek-Vision",
+      "homepage": "https://github.com/Eostrehold/Plugin-Deepseek-Vision",
+      "license": "MIT",
+      "tags": [
+        "Interceptor",
+        "Vision",
+        "DeepSeek"
+      ]
+    }
+  ]
+}
